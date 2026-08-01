@@ -1,0 +1,26 @@
+# build trees
+build/
+out/
+bin/
+.vs/
+*.user
+*.aps
+
+# Dear ImGui is cloned, not vendored - see README for the one-line fetch.
+# It has its own .git, so committing it would create a confusing nested repo.
+third_party/
+
+# our own output
+Violet.log
+
+# IDA
+*.i64
+*.idb
+*.til
+*.nam
+*.id0
+*.id1
+*.id2
+
+# OneDrive junk
+desktop.ini
