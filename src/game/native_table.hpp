@@ -129,4 +129,54 @@ namespace violet::game
     // 256 buckets: a wrong formula yields garbage, the right one yields a valid
     // registration block nearly every time.
     void crack_chain(std::uintptr_t table_rva);
+
+    // -----------------------------------------------------------------------
+    // The real thing
+    // -----------------------------------------------------------------------
+    //
+    // The registration structure, decoded from GTA's own registerNative()
+    // (sub_140920D70 in the memory dump). Layout, for a 0x100-byte block:
+    //
+    //   +0x00  u32   nextLow  ^ mask
+    //   +0x04  u32   nextHigh ^ mask          mask = (u32)block ^ [0x08]
+    //   +0x08  u32   key
+    //   +0x10  ptr   handlers[7]              PLAINTEXT
+    //   +0x48  u32   count ^ (u32)&[0x48] ^ [0x4C]
+    //   +0x4C  u32   key
+    //   +0x54  u32   hashLow  ^ m   \
+    //   +0x58  u32   hashHigh ^ m    >  per entry, stride 16
+    //   +0x5C  u32   key             /   m = (u32)&[0x54+i*16] ^ [0x5C+i*16]
+    //
+    // The obfuscation keys are produced by an LCG (x*0x343FD + 0x269EC3) and
+    // are stored right beside the values they hide - so nothing needs breaking,
+    // only reading in the right order.
+    //
+    // Crucially each mask folds in the ADDRESS of the field it protects. That
+    // is why no fixed formula could ever recover the pointer: the mask is
+    // different for every block, and for every entry within a block.
+    struct NativeEntry
+    {
+        std::uint64_t  hash    = 0;
+        std::uintptr_t handler = 0;
+    };
+
+    struct DecodedTable
+    {
+        bool           ok        = false;
+        std::uintptr_t table     = 0;
+        std::uintptr_t table_rva = 0;
+        std::size_t    blocks    = 0;
+        std::size_t    natives   = 0;
+        double         elapsed_ms = 0.0;
+        std::string    detail;
+    };
+
+    // Walk and decode the whole table. Pass 0 to locate it automatically.
+    DecodedTable decode_native_table(std::uintptr_t table_rva = 0);
+
+    // Resolve one native's handler by hash. Returns 0 if unknown.
+    std::uintptr_t find_native_handler(std::uint64_t hash);
+
+    // Everything decoded, for dumping.
+    const std::vector<NativeEntry>& decoded_natives();
 }

@@ -385,6 +385,222 @@ NativeTableScan find_native_table()
 }
 
 // ---------------------------------------------------------------------------
+// decode_native_table - the real one
+// ---------------------------------------------------------------------------
+
+namespace
+{
+    // Offsets read straight out of GTA's registerNative(). See the header for
+    // the full layout and the reasoning.
+    constexpr std::size_t k_reg_next_lo  = 0x00;
+    constexpr std::size_t k_reg_next_hi  = 0x04;
+    constexpr std::size_t k_reg_next_key = 0x08;
+    constexpr std::size_t k_reg_handlers = 0x10;
+    constexpr std::size_t k_reg_count    = 0x48;
+    constexpr std::size_t k_reg_count_key= 0x4C;
+    constexpr std::size_t k_reg_hashes   = 0x54;
+    constexpr std::size_t k_reg_hash_step= 0x10;
+    constexpr std::size_t k_reg_size     = 0x100;
+    constexpr std::size_t k_reg_max      = 7;
+
+    std::uintptr_t decode_next(std::uintptr_t block)
+    {
+        // mask = (u32)block ^ key. The block's own address is part of the key,
+        // which is exactly why a fixed recombination could never work.
+        const auto key  = read<std::uint32_t>(block + k_reg_next_key);
+        const auto mask = static_cast<std::uint32_t>(block) ^ key;
+
+        const auto lo = read<std::uint32_t>(block + k_reg_next_lo) ^ mask;
+        const auto hi = read<std::uint32_t>(block + k_reg_next_hi) ^ mask;
+
+        return static_cast<std::uintptr_t>(lo) |
+               (static_cast<std::uintptr_t>(hi) << 32);
+    }
+
+    std::uint32_t decode_count(std::uintptr_t block)
+    {
+        // Keyed on the address of the count field itself, not the block.
+        const auto field = static_cast<std::uint32_t>(block + k_reg_count);
+        return read<std::uint32_t>(block + k_reg_count_key)
+             ^ field
+             ^ read<std::uint32_t>(block + k_reg_count);
+    }
+
+    std::uint64_t decode_hash(std::uintptr_t block, std::size_t index)
+    {
+        const std::uintptr_t at = block + k_reg_hashes + index * k_reg_hash_step;
+
+        const auto key  = read<std::uint32_t>(at + 8);
+        const auto mask = static_cast<std::uint32_t>(at) ^ key;
+
+        const auto lo = read<std::uint32_t>(at + 0) ^ mask;
+        const auto hi = read<std::uint32_t>(at + 4) ^ mask;
+
+        return static_cast<std::uint64_t>(lo) |
+               (static_cast<std::uint64_t>(hi) << 32);
+    }
+
+    std::uintptr_t handler_at(std::uintptr_t block, std::size_t index)
+    {
+        return read<std::uintptr_t>(block + k_reg_handlers + index * 8);
+    }
+
+    std::vector<NativeEntry> g_decoded;
+
+    // Verify a candidate table by decoding it. A real one yields sane counts
+    // and thousands of entries; anything else falls apart immediately.
+    std::size_t try_decode(std::uintptr_t table,
+                           const violet::mem::RegionMap& regions,
+                           std::vector<NativeEntry>* out,
+                           std::size_t* out_blocks)
+    {
+        std::unordered_set<std::uintptr_t> seen;
+        std::size_t natives = 0, blocks = 0;
+
+        for (std::size_t bucket = 0; bucket < k_table_slots; ++bucket)
+        {
+            auto block = read<std::uintptr_t>(table + bucket * 8);
+            std::size_t guard = 0;
+
+            while (block != 0 && guard++ < 512)
+            {
+                if (!regions.readable(block, k_reg_size))
+                    break;
+                if (!seen.insert(block).second)
+                    break;
+
+                const auto count = decode_count(block);
+                if (count == 0 || count > k_reg_max)
+                    break;   // decode failed - not the table, or not a block
+
+                ++blocks;
+                for (std::size_t i = 0; i < count; ++i)
+                {
+                    const auto handler = handler_at(block, i);
+                    if (!regions.executable(handler))
+                        continue;
+
+                    ++natives;
+                    if (out != nullptr)
+                        out->push_back({ decode_hash(block, i), handler });
+                }
+
+                block = decode_next(block);
+            }
+        }
+
+        if (out_blocks != nullptr)
+            *out_blocks = blocks;
+
+        return natives;
+    }
+}
+
+DecodedTable decode_native_table(std::uintptr_t table_rva)
+{
+    DecodedTable result;
+    const Timer timer;
+
+    const auto info = violet::process::inspect(nullptr);
+    if (!info)
+    {
+        result.detail = "could not read PE headers";
+        return result;
+    }
+
+    violet::mem::RegionMap regions;
+    regions.rebuild();
+
+    std::uintptr_t table = 0;
+
+    if (table_rva != 0)
+    {
+        table = info->base + table_rva;
+    }
+    else
+    {
+        // Locate it by decoding rather than by shape. Now that we can read the
+        // structure properly, "does this decode to thousands of natives?" is a
+        // far stronger test than anything structural.
+        std::size_t best = 0;
+
+        for (const auto& section : info->sections)
+        {
+            if (section.executable() || !section.writable() ||
+                section.size < k_table_slots * 8)
+                continue;
+
+            const std::size_t slots = section.size / 8;
+            for (std::size_t i = 0; i + k_table_slots < slots; ++i)
+            {
+                const auto first = read<std::uintptr_t>(section.start + i * 8);
+                if (first == 0 || !regions.readable(first, k_reg_size))
+                    continue;
+
+                // Cheap pre-filter: the first block must decode to a sane count
+                // and hold at least one real code pointer.
+                const auto count = decode_count(first);
+                if (count == 0 || count > k_reg_max)
+                    continue;
+                if (!regions.executable(handler_at(first, 0)))
+                    continue;
+
+                const auto candidate = section.start + i * 8;
+                const std::size_t n = try_decode(candidate, regions, nullptr, nullptr);
+
+                if (n > best)
+                {
+                    best  = n;
+                    table = candidate;
+                }
+
+                if (best > 4000)
+                    break;   // unambiguous; stop sweeping
+            }
+
+            if (best > 4000)
+                break;
+        }
+    }
+
+    if (table == 0)
+    {
+        result.elapsed_ms = timer.ms();
+        result.detail = "could not locate the table";
+        return result;
+    }
+
+    g_decoded.clear();
+    g_decoded.reserve(6000);
+
+    std::size_t blocks = 0;
+    const std::size_t natives = try_decode(table, regions, &g_decoded, &blocks);
+
+    result.table      = table;
+    result.table_rva  = table - info->base;
+    result.blocks     = blocks;
+    result.natives    = natives;
+    result.elapsed_ms = timer.ms();
+    result.ok         = natives >= 2000 && natives <= 12000;
+
+    result.detail = result.ok
+        ? std::format("{} natives across {} blocks", natives, blocks)
+        : std::format("decoded only {} natives - not right", natives);
+
+    return result;
+}
+
+std::uintptr_t find_native_handler(std::uint64_t hash)
+{
+    for (const auto& entry : g_decoded)
+        if (entry.hash == hash)
+            return entry.handler;
+    return 0;
+}
+
+const std::vector<NativeEntry>& decoded_natives() { return g_decoded; }
+
+// ---------------------------------------------------------------------------
 // crack_chain
 // ---------------------------------------------------------------------------
 //
