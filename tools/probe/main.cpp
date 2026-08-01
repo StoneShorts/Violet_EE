@@ -16,9 +16,11 @@
 #include "core/process.hpp"
 #include "game/invoker.hpp"
 #include "game/native_table.hpp"
+#include "game/observer.hpp"
 
 #include <Windows.h>
 
+#include <algorithm>
 #include <cstdlib>
 #include <filesystem>
 #include <format>
@@ -544,6 +546,76 @@ namespace
             }
         }
 
+        // ---- watch the game use its own natives ---------------------------
+        //
+        // The safe inverse of the sweep that broke a session. Nothing is called
+        // speculatively: handler pointers in the registration table are swapped
+        // for pass-through trampolines, the GAME invokes the natives itself on
+        // its own thread with its own arguments, and we only record.
+        {
+            VIOLET_INFO("");
+            VIOLET_INFO("--- observing native traffic ----------------------");
+
+            std::vector<std::uintptr_t> candidates;
+            {
+                wchar_t* local = nullptr;
+                std::size_t len = 0;
+                if (_wdupenv_s(&local, &len, L"LOCALAPPDATA") == 0 && local)
+                {
+                    const std::filesystem::path p =
+                        std::filesystem::path{ local } / L"Violet" / L"zeroarg.txt";
+                    std::free(local);
+
+                    std::ifstream f{ p };
+                    std::string line;
+                    while (std::getline(f, line))
+                        if (!line.empty())
+                            candidates.push_back(std::strtoull(line.c_str(), nullptr, 16));
+                }
+            }
+
+            const std::size_t hooked =
+                violet::game::observe_natives(candidates, 512);
+
+            if (hooked == 0)
+            {
+                VIOLET_WARN("  nothing hooked");
+            }
+            else
+            {
+                VIOLET_INFO("  watching {} natives for 15 seconds - play normally", hooked);
+                Sleep(15000);
+
+                auto seen = violet::game::observations();
+
+                // Busiest first: the natives the game leans on hardest are the
+                // ones worth naming.
+                std::sort(seen.begin(), seen.end(),
+                          [](const auto& a, const auto& b) { return a.calls > b.calls; });
+
+                VIOLET_INFO("  {} of {} were actually called", seen.size(), hooked);
+                VIOLET_INFO("");
+                VIOLET_INFO("  {:>10}  {:>4}  {:>18}  {:>8}  {}",
+                            "calls", "args", "result", "stable", "handler RVA");
+
+                const auto mi3 = violet::process::inspect(nullptr);
+                const std::uintptr_t b3 = mi3 ? mi3->base : 0;
+
+                for (std::size_t i = 0; i < seen.size() && i < 25; ++i)
+                {
+                    const auto& o = seen[i];
+                    VIOLET_INFO("  {:>10}  {:>4}  0x{:016X}  {:>8}  0x{:X}",
+                                o.calls, o.arg_count, o.last_result,
+                                o.result_stable ? "yes" : "no",
+                                b3 ? o.handler - b3 : 0);
+                }
+            }
+
+            // Always restore. Leaving trampolines in a table that outlives this
+            // DLL would crash the game the instant it next used one.
+            violet::game::stop_observing();
+        }
+
         VIOLET_INFO("");
         VIOLET_INFO("probe complete - unloading");
         violet::log::shutdown();
@@ -564,3 +636,4 @@ BOOL APIENTRY DllMain(HMODULE self, DWORD reason, LPVOID)
     }
     return TRUE;
 }
+

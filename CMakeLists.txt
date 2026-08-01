@@ -140,6 +140,7 @@ add_library(probe SHARED
     src/mem/regions.cpp
     src/game/invoker.cpp
     src/game/native_table.cpp
+    src/game/observer.cpp
 )
 target_include_directories(probe PRIVATE src)
 target_link_libraries(probe PRIVATE violet_common_flags)
