@@ -58,4 +58,12 @@ namespace violet::render
     // Is the menu currently open? Drives click-through and input focus.
     bool menu_visible();
     void set_menu_visible(bool visible);
+
+    // Ask the overlay to shut down and unload Violet from the process.
+    //
+    // This exits the render loop, which tears down D3D12 and the window, after
+    // which main.cpp calls FreeLibraryAndExitThread. The unload is clean enough
+    // that you can inject a fresh build immediately without restarting the game
+    // - which is the main reason to have it.
+    void request_unload();
 }

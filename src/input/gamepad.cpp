@@ -155,32 +155,57 @@ void feed_imgui(const PadState& s, bool suppress_chord_buttons)
     button(ImGuiKey_GamepadFaceLeft,  pad::x);
     button(ImGuiKey_GamepadFaceUp,    pad::y);
 
-    button(ImGuiKey_GamepadDpadUp,    pad::dpad_up);
-    button(ImGuiKey_GamepadDpadDown,  pad::dpad_down);
-    button(ImGuiKey_GamepadDpadRight, pad::dpad_right);
-    button(ImGuiKey_GamepadDpadLeft,  pad::dpad_left, suppress_chord_buttons);
+    // ---- movement: D-pad AND the left stick -------------------------------
+    //
+    // ImGui moves the navigation cursor from its Dpad keys only - its "LStick"
+    // keys are reserved for scrolling the view. So to let the left stick move
+    // between items as well, we route it onto the Dpad keys rather than the
+    // LStick ones.
+    constexpr int lz = XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE;
+    constexpr int rz = XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE;
 
-    button(ImGuiKey_GamepadL1,        pad::left_shoulder);
-    button(ImGuiKey_GamepadR1,        pad::right_shoulder);
-    button(ImGuiKey_GamepadL3,        pad::left_thumb);
-    button(ImGuiKey_GamepadR3,        pad::right_thumb);
+    const bool up    = (s.buttons & pad::dpad_up)    != 0 || s.left_y >  lz;
+    const bool down  = (s.buttons & pad::dpad_down)  != 0 || s.left_y < -lz;
+    const bool left  = (s.buttons & pad::dpad_left)  != 0 || s.left_x < -lz;
+    const bool right = (s.buttons & pad::dpad_right) != 0 || s.left_x >  lz;
+
+    io.AddKeyEvent(ImGuiKey_GamepadDpadUp,    up);
+    io.AddKeyEvent(ImGuiKey_GamepadDpadDown,  down);
+    io.AddKeyEvent(ImGuiKey_GamepadDpadRight, right);
+    io.AddKeyEvent(ImGuiKey_GamepadDpadLeft,  left && !suppress_chord_buttons);
+
+    // ---- bumpers: move faster ---------------------------------------------
+    //
+    // L1/R1 are already aliased inside ImGui to NavGamepadTweakSlow and
+    // NavGamepadTweakFast, which scale scrolling by 1/10x and 10x while held.
+    // We additionally send Page Up / Page Down so a *tap* jumps a whole screen
+    // of items rather than only affecting scroll speed.
+    const bool lb = (s.buttons & pad::left_shoulder)  != 0;
+    const bool rb = (s.buttons & pad::right_shoulder) != 0;
+
+    io.AddKeyEvent(ImGuiKey_GamepadL1, lb);
+    io.AddKeyEvent(ImGuiKey_GamepadR1, rb);
+    io.AddKeyEvent(ImGuiKey_PageUp,    lb);
+    io.AddKeyEvent(ImGuiKey_PageDown,  rb);
+
+    button(ImGuiKey_GamepadL3, pad::left_thumb);
+    button(ImGuiKey_GamepadR3, pad::right_thumb);
 
     analog(ImGuiKey_GamepadL2, s.left_trigger,  XINPUT_GAMEPAD_TRIGGER_THRESHOLD, 255);
     analog(ImGuiKey_GamepadR2, s.right_trigger, XINPUT_GAMEPAD_TRIGGER_THRESHOLD, 255,
            suppress_chord_buttons);
 
-    constexpr int lz = XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE;
-    constexpr int rz = XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE;
-
-    analog(ImGuiKey_GamepadLStickLeft,  s.left_x,  -lz, -32768);
-    analog(ImGuiKey_GamepadLStickRight, s.left_x,   lz,  32767);
-    analog(ImGuiKey_GamepadLStickUp,    s.left_y,   lz,  32767);
-    analog(ImGuiKey_GamepadLStickDown,  s.left_y,  -lz, -32768);
-
-    analog(ImGuiKey_GamepadRStickLeft,  s.right_x, -rz, -32768);
-    analog(ImGuiKey_GamepadRStickRight, s.right_x,  rz,  32767);
-    analog(ImGuiKey_GamepadRStickUp,    s.right_y,  rz,  32767);
-    analog(ImGuiKey_GamepadRStickDown,  s.right_y, -rz, -32768);
+    // ---- scrolling: the RIGHT stick ---------------------------------------
+    //
+    // Deliberately crossed over. ImGui scrolls from its LStick keys and does
+    // not consume the RStick keys at all, so feeding the physical right stick
+    // into the LStick slots is what actually produces right-stick scrolling.
+    // Sign convention: XInput Y is positive up, and ImGui's scroll grows
+    // downward, so pushing the stick down maps to LStickDown and scrolls down.
+    analog(ImGuiKey_GamepadLStickLeft,  s.right_x, -rz, -32768);
+    analog(ImGuiKey_GamepadLStickRight, s.right_x,  rz,  32767);
+    analog(ImGuiKey_GamepadLStickUp,    s.right_y,  rz,  32767);
+    analog(ImGuiKey_GamepadLStickDown,  s.right_y, -rz, -32768);
 }
 
 bool menu_chord_held(const PadState& s)

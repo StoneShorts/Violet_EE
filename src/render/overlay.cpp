@@ -666,6 +666,12 @@ namespace
 
 bool menu_visible() { return g_menu_open; }
 
+void request_unload()
+{
+    VIOLET_INFO("unload requested from the menu");
+    g_running = false;
+}
+
 void set_menu_visible(bool visible)
 {
     if (g_menu_open == visible)

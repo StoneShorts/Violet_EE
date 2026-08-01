@@ -32,6 +32,9 @@ namespace
 
     std::optional<violet::process::ModuleInfo> g_module;
 
+    // Two-step guard on the unload button - see the footer in draw().
+    bool g_unload_armed = false;
+
     // -----------------------------------------------------------------------
     // fonts
     // -----------------------------------------------------------------------
@@ -175,7 +178,10 @@ namespace
         const auto& gp = violet::input::poll();
         key_value("controller", gp.connected ? "connected" : "not detected");
         key_value("toggle", "END  /  PAGE UP  /  D-pad LEFT + RT");
-        key_value("navigate", "D-pad or left stick,  A select,  B back");
+        key_value("move", "D-pad  or  left stick");
+        key_value("select", "A  select,   B  back");
+        key_value("page jump", "LB / RB   (also 10x scroll speed)");
+        key_value("scroll", "right stick");
 
         if (g_module)
         {
@@ -289,7 +295,10 @@ void draw()
     draw_watermark();
 
     if (!violet::render::menu_visible())
+    {
+        g_unload_armed = false;   // closing the menu cancels a pending unload
         return;
+    }
 
     const ImGuiViewport* vp = ImGui::GetMainViewport();
 
@@ -386,6 +395,42 @@ void draw()
     ImGui::PushStyleColor(ImGuiCol_Text, k_text_dim);
     ImGui::TextUnformatted("END / PAGE UP / D-pad LEFT + RT   close");
     ImGui::PopStyleColor();
+
+    // Unload, right-aligned and deliberately two-step. On a controller the A
+    // button activates whatever the nav cursor happens to be sitting on, and
+    // silently removing Violet from the process on a stray press would be a
+    // genuinely irritating way to lose your session.
+    {
+        const char* label = g_unload_armed ? "Confirm unload" : "Unload Violet";
+        const float width = ImGui::CalcTextSize(label).x + ImGui::GetStyle().FramePadding.x * 2.0f;
+
+        ImGui::SameLine();
+        ImGui::SetCursorPosX(ImGui::GetWindowWidth() - width - ImGui::GetStyle().WindowPadding.x);
+
+        const ImVec4 idle  = g_unload_armed ? ImVec4{ 0.62f, 0.16f, 0.22f, 0.90f }
+                                            : ImVec4{ k_violet.x, k_violet.y, k_violet.z, 0.22f };
+        const ImVec4 hover = g_unload_armed ? ImVec4{ 0.78f, 0.20f, 0.27f, 1.00f }
+                                            : ImVec4{ k_violet.x, k_violet.y, k_violet.z, 0.45f };
+
+        ImGui::PushStyleColor(ImGuiCol_Button,        idle);
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, hover);
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive,  hover);
+
+        if (ImGui::Button(label))
+        {
+            if (g_unload_armed)
+                violet::render::request_unload();
+            else
+                g_unload_armed = true;
+        }
+
+        ImGui::PopStyleColor(3);
+
+        if (g_unload_armed && ImGui::IsItemHovered())
+            ImGui::SetTooltip("Violet will detach from the game.\n"
+                              "You can inject a fresh build straight away -\n"
+                              "no need to restart GTA.");
+    }
 
     ImGui::End();
 }
