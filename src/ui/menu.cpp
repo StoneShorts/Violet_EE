@@ -2,6 +2,8 @@
 
 #include "core/log.hpp"
 #include "core/process.hpp"
+#include "game/features.hpp"
+#include "game/scripthook.hpp"
 #include "input/gamepad.hpp"
 #include "mem/dump.hpp"
 #include "mem/pattern.hpp"
@@ -541,6 +543,216 @@ namespace
         }
     }
 
+    // Shown at the top of every feature tab when natives are not available,
+    // so the controls are never silently dead.
+    bool draw_native_gate()
+    {
+        const bool ready = violet::game::scripthook_available() &&
+                           violet::game::script_thread_alive();
+        if (ready)
+            return true;
+
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4{ 0.95f, 0.72f, 0.30f, 1.0f });
+        ImGui::TextWrapped("Natives unavailable - %s",
+                           violet::game::scripthook_status().c_str());
+        ImGui::PopStyleColor();
+
+        ImGui::PushStyleColor(ImGuiCol_Text, k_text_dim);
+        ImGui::TextWrapped(
+            "These controls need Script Hook V (Enhanced) installed in the game folder. "
+            "Violet talks to it at runtime - it is not bundled, and everything else in "
+            "the menu works without it.\n\n"
+            "Get the build matching game version 1158.13, drop ScriptHookV.dll and "
+            "dinput8.dll next to GTA5_Enhanced.exe, then relaunch and re-inject.");
+        ImGui::PopStyleColor();
+
+        ImGui::Separator();
+        ImGui::Dummy({ 0.0f, 4.0f });
+        return false;
+    }
+
+    void draw_last_result()
+    {
+        using namespace violet::game;
+
+        const int code = state().last_result.load();
+        if (code == Result_None)
+            return;
+
+        ImVec4 colour = k_text_dim;
+        const char* text = "";
+
+        switch (code)
+        {
+            case Result_Ok:         colour = { 0.44f, 0.85f, 0.52f, 1.0f }; text = "Done."; break;
+            case Result_NoWaypoint: colour = { 0.95f, 0.72f, 0.30f, 1.0f };
+                                    text = "No waypoint set - place one on the map first."; break;
+            case Result_NoGround:   colour = { 0.95f, 0.72f, 0.30f, 1.0f };
+                                    text = "Ground level unknown there (terrain not streamed in) "
+                                           "- dropped you in from height instead."; break;
+            default: return;
+        }
+
+        ImGui::PushStyleColor(ImGuiCol_Text, colour);
+        ImGui::TextWrapped("%s", text);
+        ImGui::PopStyleColor();
+    }
+
+    void tab_self()
+    {
+        const bool live = draw_native_gate();
+        auto& s = violet::game::state();
+
+        ImGui::BeginDisabled(!live);
+
+        heading("Toggles");
+
+        bool god = s.god_mode.load();
+        if (ImGui::Checkbox("God mode", &god))
+            s.god_mode = god;
+
+        bool ammo = s.infinite_ammo.load();
+        if (ImGui::Checkbox("Infinite ammo", &ammo))
+            s.infinite_ammo = ammo;
+
+        bool never = s.never_wanted.load();
+        if (ImGui::Checkbox("Never wanted", &never))
+            s.never_wanted = never;
+
+        ImGui::PushStyleColor(ImGuiCol_Text, k_text_dim);
+        ImGui::TextWrapped("Re-applied every frame - the game clears these itself on "
+                           "respawn and mission transitions.");
+        ImGui::PopStyleColor();
+
+        heading("Actions");
+
+        if (ImGui::Button("Full health", { 150.0f, 0.0f }))
+            s.want_heal = true;
+        ImGui::SameLine();
+        if (ImGui::Button("Full armour", { 150.0f, 0.0f }))
+            s.want_armour = true;
+
+        heading("Wanted level");
+
+        static int wanted = 0;
+        ImGui::SetNextItemWidth(220.0f);
+        ImGui::SliderInt("##wanted", &wanted, 0, 5);
+        ImGui::SameLine();
+        if (ImGui::Button("Set##wanted"))
+            s.set_wanted_level = wanted;
+        ImGui::SameLine();
+        if (ImGui::Button("Clear##wanted"))
+            s.set_wanted_level = 0;
+
+        heading("Player");
+
+        char buf[128];
+        std::snprintf(buf, sizeof(buf), "%d", s.player_ped.load());
+        key_value("ped handle", buf, true);
+
+        std::snprintf(buf, sizeof(buf), "%.1f, %.1f, %.1f",
+                      s.pos_x.load(), s.pos_y.load(), s.pos_z.load());
+        key_value("position", buf, true);
+
+        key_value("in vehicle", s.in_vehicle.load() ? "yes" : "no");
+
+        ImGui::EndDisabled();
+    }
+
+    void tab_weapons()
+    {
+        const bool live = draw_native_gate();
+        auto& s = violet::game::state();
+
+        ImGui::BeginDisabled(!live);
+
+        if (ImGui::Button("Give every weapon", { -1.0f, 0.0f }))
+            s.want_all_weapons = true;
+
+        heading("Individual");
+
+        std::size_t count = 0;
+        const auto* weapons = violet::game::weapon_list(count);
+
+        // Two columns, so a long list stays readable without endless scrolling.
+        if (ImGui::BeginTable("##weapons", 2, ImGuiTableFlags_ScrollY, { 0.0f, 300.0f }))
+        {
+            for (std::size_t i = 0; i < count; ++i)
+            {
+                if (i % 2 == 0)
+                    ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+
+                ImGui::PushID(static_cast<int>(i));
+                if (ImGui::Button(weapons[i].label, { -1.0f, 0.0f }))
+                    s.want_weapon = static_cast<int>(i);
+                ImGui::PopID();
+            }
+            ImGui::EndTable();
+        }
+
+        ImGui::PushStyleColor(ImGuiCol_Text, k_text_dim);
+        ImGui::TextWrapped("Each gives 9999 rounds and equips it.");
+        ImGui::PopStyleColor();
+
+        ImGui::EndDisabled();
+    }
+
+    void tab_world()
+    {
+        const bool live = draw_native_gate();
+        auto& s = violet::game::state();
+
+        ImGui::BeginDisabled(!live);
+
+        heading("Teleport");
+
+        if (ImGui::Button("Teleport to waypoint", { -1.0f, 0.0f }))
+            s.want_teleport_waypoint = true;
+
+        ImGui::PushStyleColor(ImGuiCol_Text, k_text_dim);
+        ImGui::TextWrapped("Place a waypoint on the map first. Takes your vehicle with "
+                           "you if you are in one.");
+        ImGui::PopStyleColor();
+
+        ImGui::Dummy({ 0.0f, 4.0f });
+        draw_last_result();
+
+        heading("Time");
+
+        static int hour = 12;
+        ImGui::SetNextItemWidth(220.0f);
+        ImGui::SliderInt("##hour", &hour, 0, 23, "%02d:00");
+        ImGui::SameLine();
+        if (ImGui::Button("Set##time"))
+            s.set_clock_hour = hour;
+
+        heading("Weather");
+
+        std::size_t weather_count = 0;
+        const auto* weather = violet::game::weather_list(weather_count);
+
+        static int weather_index = 0;
+        ImGui::SetNextItemWidth(220.0f);
+        if (ImGui::BeginCombo("##weather", weather[weather_index]))
+        {
+            for (std::size_t i = 0; i < weather_count; ++i)
+            {
+                const bool selected = (static_cast<int>(i) == weather_index);
+                if (ImGui::Selectable(weather[i], selected))
+                    weather_index = static_cast<int>(i);
+                if (selected)
+                    ImGui::SetItemDefaultFocus();
+            }
+            ImGui::EndCombo();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Apply##weather"))
+            s.set_weather = weather_index;
+
+        ImGui::EndDisabled();
+    }
+
     void tab_status(const ImGuiViewport* vp)
     {
         char buf[128];
@@ -742,19 +954,19 @@ void draw()
 
         if (ImGui::BeginTabItem("Self"))
         {
-            placeholder(
-                "Empty until stage 5.\n\n"
-                "God mode, health, armour, wanted level - all of it works by calling the "
-                "game's own scripting functions, its \"natives\". We cannot call one yet, "
-                "because we have not found the table that maps a native's ID to the "
-                "address of the code implementing it.\n\n"
-                "Finding that table is the reverse-engineering chapter.");
+            tab_self();
+            ImGui::EndTabItem();
+        }
+
+        if (ImGui::BeginTabItem("Weapons"))
+        {
+            tab_weapons();
             ImGui::EndTabItem();
         }
 
         if (ImGui::BeginTabItem("World"))
         {
-            placeholder("Teleports, time and weather. Also stage 5.");
+            tab_world();
             ImGui::EndTabItem();
         }
 

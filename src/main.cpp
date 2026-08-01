@@ -14,6 +14,7 @@
 #include "core/log.hpp"
 #include "core/process.hpp"
 #include "game/native_table.hpp"
+#include "game/scripthook.hpp"
 #include "mem/pattern.hpp"
 #include "render/overlay.hpp"
 
@@ -246,6 +247,25 @@ namespace
                 VIOLET_INFO("");
                 violet::game::probe_layouts();
             }
+        }
+
+        // ---- the native layer ----
+        //
+        // Bound at runtime, never linked, so a missing ScriptHookV costs the
+        // cheats rather than the entire DLL failing to load.
+        VIOLET_INFO("");
+        VIOLET_INFO("--- native layer -----------------------------------");
+        if (violet::game::bind_scripthook())
+        {
+            violet::game::start_script_thread(g_self);
+            VIOLET_INFO("  natives: {}", violet::game::scripthook_status());
+        }
+        else
+        {
+            VIOLET_WARN("  natives: {}", violet::game::scripthook_status());
+            VIOLET_WARN("  The overlay and all analysis tools still work.");
+            VIOLET_WARN("  Install Script Hook V (Enhanced, build 1158.13) to enable");
+            VIOLET_WARN("  the Self / Weapons / World tabs.");
         }
 
         VIOLET_INFO("");

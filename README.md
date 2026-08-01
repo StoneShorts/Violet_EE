@@ -18,8 +18,8 @@ modding actually works underneath the frameworks that usually hide it.
 
 ## Status
 
-Working today: Violet injects into the game, parses its PE layout, and renders a
-themed, controller-navigable ImGui overlay on top of it.
+Working today: Violet injects into the game, parses its PE layout, renders a themed,
+controller-navigable ImGui overlay, and drives a working set of trainer features.
 
 | Stage | | |
 |---|---|:--|
@@ -27,8 +27,31 @@ themed, controller-navigable ImGui overlay on top of it.
 | 2 | PE parsing & process recon | ✅ |
 | 3 | DirectX 12 overlay + Dear ImGui | ✅ |
 | 4 | Keyboard & controller input | ✅ |
-| 5 | Pattern scanning, native invoker | 🚧 next |
-| 6 | Trainer features | |
+| 5 | Signature scanner, memory dumper, live probe | ✅ |
+| 5b | From-scratch native table | 🔬 research, see below |
+| 6 | Trainer features | ✅ god mode · health · armour · wanted level · weapons · teleport · time · weather |
+| 7 | AI NPC "offline lobby" | 🚧 next |
+
+## The native layer
+
+The Self / Weapons / World tabs need **Script Hook V (Enhanced)** — the build matching
+your game version. Drop `ScriptHookV.dll` and `dinput8.dll` next to `GTA5_Enhanced.exe`.
+
+Violet binds to it **at runtime via `GetProcAddress`**; nothing is vendored here, and a
+static import that failed to resolve would stop the whole DLL loading. Without it you
+still get the overlay, the scanner, the dumper and every analysis tool — just no cheats,
+with the menu saying so plainly rather than sitting there dead.
+
+**Why one component is borrowed.** Calling a native means turning a 64-bit hash into an
+engine function address. On Enhanced the hashes are *encrypted in memory* — a sweep of all
+7.6 GB found only Violet's own probe constants — and the registration blocks' chain
+pointer is obfuscated too, so the table cannot be walked. Enhanced is also a Clang build
+(the leftover PDB path says `game_win64_gdk_master_llvm.pdb`), so no published offsets
+from GTA V Legacy transfer.
+
+That research continues and is written up in
+[`docs/02-recon-findings.md`](docs/02-recon-findings.md). It just shouldn't be the thing
+standing between this project and a menu that works.
 | 7 | AI NPC "offline lobby" | |
 
 The end goal for stage 7: spawned NPCs running a behaviour state machine — wander, drive,

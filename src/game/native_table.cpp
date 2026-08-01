@@ -385,6 +385,172 @@ NativeTableScan find_native_table()
 }
 
 // ---------------------------------------------------------------------------
+// crack_chain
+// ---------------------------------------------------------------------------
+//
+// The two qwords at +0x00 and +0x08 are the chain pointer, stored obfuscated
+// as a pair. Rather than guess the formula, generate every plausible way of
+// recombining them and test each against all 256 buckets. A wrong formula
+// yields garbage that is not a valid registration block; the right one yields
+// a valid block nearly every time. The winner is unmistakable.
+
+namespace
+{
+    constexpr std::uint64_t lo32(std::uint64_t v) { return v & 0xFFFFFFFFull; }
+    constexpr std::uint64_t hi32(std::uint64_t v) { return v >> 32; }
+
+    std::uint64_t rotl64(std::uint64_t v, int n)
+    {
+        return (v << n) | (v >> (64 - n));
+    }
+
+    struct Formula
+    {
+        const char* name;
+        std::uint64_t (*apply)(std::uint64_t v1, std::uint64_t v2, std::uint64_t addr);
+    };
+
+    const Formula k_formulas[] = {
+        { "v1",                          [](std::uint64_t a, std::uint64_t,  std::uint64_t)  { return a; } },
+        { "v2",                          [](std::uint64_t,  std::uint64_t b, std::uint64_t)  { return b; } },
+        { "v1^v2",                       [](std::uint64_t a, std::uint64_t b, std::uint64_t)  { return a ^ b; } },
+        { "v1^addr",                     [](std::uint64_t a, std::uint64_t,  std::uint64_t c) { return a ^ c; } },
+        { "v2^addr",                     [](std::uint64_t,  std::uint64_t b, std::uint64_t c) { return b ^ c; } },
+        { "v1^v2^addr",                  [](std::uint64_t a, std::uint64_t b, std::uint64_t c) { return a ^ b ^ c; } },
+        { "lo(v1)|lo(v2)<<32",           [](std::uint64_t a, std::uint64_t b, std::uint64_t)  { return lo32(a) | (lo32(b) << 32); } },
+        { "lo(v2)|lo(v1)<<32",           [](std::uint64_t a, std::uint64_t b, std::uint64_t)  { return lo32(b) | (lo32(a) << 32); } },
+        { "lo(v1^a)|lo(v2^a)<<32",       [](std::uint64_t a, std::uint64_t b, std::uint64_t c) { return lo32(a ^ c) | (lo32(b ^ c) << 32); } },
+        { "lo(v2^a)|lo(v1^a)<<32",       [](std::uint64_t a, std::uint64_t b, std::uint64_t c) { return lo32(b ^ c) | (lo32(a ^ c) << 32); } },
+        { "lo(v1^v2)|hi(v1^v2)<<32",     [](std::uint64_t a, std::uint64_t b, std::uint64_t)  { const auto x = a ^ b; return lo32(x) | (hi32(x) << 32); } },
+        { "lo(v1)|hi(v2)<<32",           [](std::uint64_t a, std::uint64_t b, std::uint64_t)  { return lo32(a) | (hi32(b) << 32); } },
+        { "lo(v2)|hi(v1)<<32",           [](std::uint64_t a, std::uint64_t b, std::uint64_t)  { return lo32(b) | (hi32(a) << 32); } },
+        { "hi(v1)|lo(v2)<<32",           [](std::uint64_t a, std::uint64_t b, std::uint64_t)  { return hi32(a) | (lo32(b) << 32); } },
+        { "(v1^v2)^addr rot32",          [](std::uint64_t a, std::uint64_t b, std::uint64_t c) { return rotl64(a ^ b ^ c, 32); } },
+        { "rotl(v1^v2,32)",              [](std::uint64_t a, std::uint64_t b, std::uint64_t)  { return rotl64(a ^ b, 32); } },
+        { "rotl(v1,32)^v2",              [](std::uint64_t a, std::uint64_t b, std::uint64_t)  { return rotl64(a, 32) ^ b; } },
+        { "rotl(v2,32)^v1",              [](std::uint64_t a, std::uint64_t b, std::uint64_t)  { return rotl64(b, 32) ^ a; } },
+        { "v1-addr",                     [](std::uint64_t a, std::uint64_t,  std::uint64_t c) { return a - c; } },
+        { "v2-addr",                     [](std::uint64_t,  std::uint64_t b, std::uint64_t c) { return b - c; } },
+        { "v1+addr",                     [](std::uint64_t a, std::uint64_t,  std::uint64_t c) { return a + c; } },
+        { "lo(v1)^lo(v2) | hi<<32",      [](std::uint64_t a, std::uint64_t b, std::uint64_t)  { return (lo32(a) ^ lo32(b)) | ((hi32(a) ^ hi32(b)) << 32); } },
+        { "v2 & 0xFFFFFFFFFFF8",         [](std::uint64_t,  std::uint64_t b, std::uint64_t)  { return b & 0x0000FFFFFFFFFFF8ull; } },
+        { "v1^(v2<<32)",                 [](std::uint64_t a, std::uint64_t b, std::uint64_t)  { return a ^ (b << 32); } },
+    };
+}
+
+void crack_chain(std::uintptr_t table_rva)
+{
+    violet::mem::RegionMap regions;
+    regions.rebuild();
+
+    const auto info = violet::process::inspect(nullptr);
+    if (!info)
+        return;
+
+    const std::uintptr_t table = info->base + table_rva;
+
+    VIOLET_INFO("--- cracking the chain pointer ----------------------");
+    VIOLET_INFO("  +0x00 and +0x08 hold the next pointer as an obfuscated pair.");
+    VIOLET_INFO("  Trying {} recombinations against all 256 buckets. A wrong",
+                std::size(k_formulas));
+    VIOLET_INFO("  formula produces garbage; the right one produces a valid");
+    VIOLET_INFO("  registration block almost every time.");
+    VIOLET_INFO("");
+
+    std::size_t best_index = 0;
+    std::size_t best_hits  = 0;
+
+    for (std::size_t f = 0; f < std::size(k_formulas); ++f)
+    {
+        std::size_t valid = 0;
+        std::size_t null_next = 0;
+
+        for (std::size_t i = 0; i < k_table_slots; ++i)
+        {
+            const auto block = read<std::uintptr_t>(table + i * 8);
+            if (!regions.readable(block, k_block_size))
+                continue;
+
+            const auto v1 = read<std::uint64_t>(block + 0x00);
+            const auto v2 = read<std::uint64_t>(block + 0x08);
+
+            const auto next = static_cast<std::uintptr_t>(
+                k_formulas[f].apply(v1, v2, static_cast<std::uint64_t>(block)));
+
+            if (next == 0)
+            {
+                ++null_next;   // a legitimate end-of-chain
+                continue;
+            }
+
+            // The test: does it land on something that is itself a block?
+            if (regions.readable(next, k_block_size) &&
+                handler_count(next, regions) > 0)
+                ++valid;
+        }
+
+        if (valid > best_hits)
+        {
+            best_hits  = valid;
+            best_index = f;
+        }
+
+        if (valid > 0)
+            VIOLET_INFO("    {:<30} {} valid, {} null", k_formulas[f].name, valid, null_next);
+    }
+
+    VIOLET_INFO("");
+
+    if (best_hits < 32)
+    {
+        VIOLET_WARN("  No formula worked. The chain is encoded some other way.");
+        return;
+    }
+
+    VIOLET_INFO("  WINNER: {}  ({} of 256 buckets resolve to a valid block)",
+                k_formulas[best_index].name, best_hits);
+
+    // Now walk the whole table with it and count. If this is really the native
+    // table, the total lands in the thousands.
+    std::unordered_set<std::uintptr_t> seen;
+    std::size_t blocks = 0, natives = 0;
+
+    for (std::size_t i = 0; i < k_table_slots; ++i)
+    {
+        auto block = read<std::uintptr_t>(table + i * 8);
+        std::size_t guard = 0;
+
+        while (block != 0 && guard++ < 4096)
+        {
+            if (!regions.readable(block, k_block_size))
+                break;
+            if (!seen.insert(block).second)
+                break;
+
+            const auto n = handler_count(block, regions);
+            if (n == 0)
+                break;
+
+            ++blocks;
+            natives += n;
+
+            const auto v1 = read<std::uint64_t>(block + 0x00);
+            const auto v2 = read<std::uint64_t>(block + 0x08);
+            block = static_cast<std::uintptr_t>(
+                k_formulas[best_index].apply(v1, v2, static_cast<std::uint64_t>(block)));
+        }
+    }
+
+    VIOLET_INFO("");
+    VIOLET_INFO("  full walk: {} blocks, {} natives", blocks, natives);
+
+    if (natives >= 2000 && natives <= 12000)
+        VIOLET_INFO("  *** THAT IS THE NATIVE TABLE. ***");
+    else
+        VIOLET_WARN("  outside the expected 2000-12000 range - not there yet");
+}
+
+// ---------------------------------------------------------------------------
 // inspect_table
 // ---------------------------------------------------------------------------
 

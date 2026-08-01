@@ -121,4 +121,12 @@ namespace violet::game
     // single sample - which is how the "+0x08 is the next pointer" mistake
     // happened.
     void inspect_table(std::uintptr_t rva, std::size_t entries_to_dump = 4);
+
+    // Brute-force the obfuscated chain pointer.
+    //
+    // +0x00 and +0x08 hold the "next block" address as an obfuscated pair.
+    // Rather than guess the recombination, try every plausible one against all
+    // 256 buckets: a wrong formula yields garbage, the right one yields a valid
+    // registration block nearly every time.
+    void crack_chain(std::uintptr_t table_rva);
 }
