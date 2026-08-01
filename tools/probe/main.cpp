@@ -23,6 +23,10 @@
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <map>
+#include <string>
+#include <utility>
+#include <vector>
 
 namespace
 {
@@ -436,6 +440,108 @@ namespace
             VIOLET_INFO("");
             VIOLET_INFO("  {} of {} identified purely by calling them",
                         identified, std::size(tests));
+        }
+
+        // ---- hunting PLAYER_PED_ID ----------------------------------------
+        //
+        // DISABLED. This crashed a live game and the approach is not safe.
+        //
+        // The idea was sound in outline: narrow to handlers that never read
+        // [rcx+10h] (and so take no arguments), call each twice, and look for
+        // one returning a stable non-zero handle. PLAYER_PED_ID is the gateway
+        // native - with the player's ped handle in hand, most other natives
+        // become testable by observing their effect on a known entity.
+        //
+        // What it got wrong is the safety model. Structured exception handling
+        // catches an access violation, which made "call it and see" feel safe.
+        // It does not catch a native that fast-fails, tears down the process,
+        // or corrupts engine state badly enough that the game dies moments
+        // later. Across ~2000 unknown natives at least one does exactly that:
+        // the run died within the first few calls, before recording anything.
+        //
+        // The lesson is that SEH bounds the blast radius of a BAD POINTER, not
+        // of an unknown FUNCTION. Calling code whose contract you do not know
+        // is not made safe by wrapping it in a try block.
+        //
+        // A safe version needs candidates narrowed to near-certainty before any
+        // call happens - as GET_HASH_KEY was, by finding the joaat algorithm
+        // statically first, so that only a handful of calls were ever needed.
+        // Blind sweeps over thousands of unknown functions are out.
+        constexpr bool k_enable_blind_sweep = false;
+
+        if constexpr (k_enable_blind_sweep)
+        {
+            VIOLET_INFO("");
+            VIOLET_INFO("--- hunting PLAYER_PED_ID -------------------------");
+
+            const auto mi = violet::process::inspect(nullptr);
+            const std::uintptr_t mbase = mi ? mi->base : 0;
+
+            std::vector<std::uintptr_t> zero_arg;
+            {
+                wchar_t* local = nullptr;
+                std::size_t len = 0;
+                if (_wdupenv_s(&local, &len, L"LOCALAPPDATA") == 0 && local)
+                {
+                    const std::filesystem::path p =
+                        std::filesystem::path{ local } / L"Violet" / L"zeroarg.txt";
+                    std::free(local);
+
+                    std::ifstream f{ p };
+                    std::string line;
+                    while (std::getline(f, line))
+                        if (!line.empty())
+                            zero_arg.push_back(std::strtoull(line.c_str(), nullptr, 16));
+                }
+            }
+
+            VIOLET_INFO("  {} zero-argument candidates", zero_arg.size());
+
+            std::size_t called = 0, faulted = 0, nonzero = 0, stable = 0;
+            std::vector<std::pair<std::uintptr_t, std::uint64_t>> hits;
+
+            for (const auto rva : zero_arg)
+            {
+                std::uint64_t a = 0, b = 0;
+                const bool ok1 = violet::game::call_handler_raw(mbase + rva, nullptr, 0, a);
+                if (!ok1) { ++faulted; continue; }
+                ++called;
+
+                if (a == 0) continue;
+                ++nonzero;
+
+                const bool ok2 = violet::game::call_handler_raw(mbase + rva, nullptr, 0, b);
+                if (!ok2 || a != b) continue;
+                ++stable;
+
+                // A ped handle is a modest positive integer. Anything huge is a
+                // pointer or a timer, not an entity handle.
+                if (a < 0x10000000ull)
+                    hits.emplace_back(rva, a);
+            }
+
+            VIOLET_INFO("  called {}, faulted {}, non-zero {}, stable {}",
+                        called, faulted, nonzero, stable);
+            VIOLET_INFO("  handle-shaped stable results: {}", hits.size());
+
+            // Group by value: the player's ped handle should be returned by
+            // more than one native, which is a strong corroborating signal.
+            std::map<std::uint64_t, std::vector<std::uintptr_t>> by_value;
+            for (const auto& [rva, v] : hits)
+                by_value[v].push_back(rva);
+
+            for (const auto& [value, rvas] : by_value)
+            {
+                if (rvas.size() < 2 && by_value.size() > 12)
+                    continue;
+
+                std::string list;
+                for (std::size_t i = 0; i < rvas.size() && i < 6; ++i)
+                    list += std::format("0x{:X} ", rvas[i]);
+
+                VIOLET_INFO("    value {:<10} returned by {} native(s): {}",
+                            value, rvas.size(), list);
+            }
         }
 
         VIOLET_INFO("");
