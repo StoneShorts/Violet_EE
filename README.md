@@ -84,10 +84,25 @@ Two things that binary turned out to teach us, both written up in
 
 ---
 
-## Building
+## Quick start
 
 Requires **Visual Studio 2022** (Desktop C++ workload), **CMake 3.20+**, and the Windows
 10/11 SDK. x64 only.
+
+Launch GTA V Enhanced into Story Mode, wait until you're actually standing in the world,
+then run:
+
+```bash
+violet.bat
+```
+
+That fetches Dear ImGui if it's missing, configures CMake on first run, builds, checks the
+game is running and not already injected, and injects. It reports precisely which step
+failed if one does.
+
+Everything below is the same thing done by hand.
+
+## Building
 
 Fetch Dear ImGui, which is not vendored:
 

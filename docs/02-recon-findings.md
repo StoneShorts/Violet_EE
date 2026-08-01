@@ -111,6 +111,35 @@ first three; Rockstar's own we simply have to live alongside.
 
 ---
 
+---
+
+## The game's window
+
+Captured live from inside the process:
+
+| | |
+|---|---|
+| Window class | **`sgaWindow`** (GTA V Legacy used `grcWindow`) |
+| Title | `Grand Theft Auto V` |
+| Style | `0x96000000` = `WS_POPUP \| WS_VISIBLE \| WS_CLIPSIBLINGS \| WS_CLIPCHILDREN` |
+| Ex-style | `0x00000000` — **not** `WS_EX_TOPMOST` |
+
+`WS_POPUP` with no border means window rect and client rect are identical, so there is no
+title-bar offset to compensate for when aligning an overlay — `ClientToScreen({0,0})` is
+simply the window's top-left.
+
+Violet does not hardcode the class name; it picks the largest visible unowned window
+belonging to the process, and logs every candidate it considered. A game update can rename
+the class without breaking anything.
+
+**The overlay is not `WS_EX_TOPMOST`-blocked.** Since the game does not set that flag,
+an overlay that does is in a strictly higher z-order band. But ordering *within* the
+topmost band still follows activation, so the overlay must periodically re-assert
+`SetWindowPos(HWND_TOPMOST, ...)` or it sinks behind the game once the game takes focus.
+That is what `keep_on_top()` in `render/overlay.cpp` exists for.
+
+---
+
 ## Open questions
 
 - [ ] Which mitigations are set? (`DllCharacteristics` — added to recon, not yet re-run.)
