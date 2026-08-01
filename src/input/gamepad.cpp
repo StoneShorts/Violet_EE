@@ -174,19 +174,19 @@ void feed_imgui(const PadState& s, bool suppress_chord_buttons)
     io.AddKeyEvent(ImGuiKey_GamepadDpadRight, right);
     io.AddKeyEvent(ImGuiKey_GamepadDpadLeft,  left && !suppress_chord_buttons);
 
-    // ---- bumpers: move faster ---------------------------------------------
+    // ---- bumpers ----------------------------------------------------------
     //
-    // L1/R1 are already aliased inside ImGui to NavGamepadTweakSlow and
-    // NavGamepadTweakFast, which scale scrolling by 1/10x and 10x while held.
-    // We additionally send Page Up / Page Down so a *tap* jumps a whole screen
-    // of items rather than only affecting scroll speed.
-    const bool lb = (s.buttons & pad::left_shoulder)  != 0;
-    const bool rb = (s.buttons & pad::right_shoulder) != 0;
-
-    io.AddKeyEvent(ImGuiKey_GamepadL1, lb);
-    io.AddKeyEvent(ImGuiKey_GamepadR1, rb);
-    io.AddKeyEvent(ImGuiKey_PageUp,    lb);
-    io.AddKeyEvent(ImGuiKey_PageDown,  rb);
+    // Deliberately NOT page-jump keys. Moving around is the D-pad and the left
+    // stick, four directions, one predictable behaviour - rather than a second
+    // way to move that travels a different distance per press.
+    //
+    // They are still forwarded, which costs nothing and buys one thing: ImGui
+    // aliases L1/R1 to NavGamepadTweakSlow and NavGamepadTweakFast, so holding
+    // a bumper scales scrolling by 1/10x or 10x. That only has an effect while
+    // you are already scrolling with the right stick, so it cannot surprise you
+    // in the middle of navigating.
+    button(ImGuiKey_GamepadL1, pad::left_shoulder);
+    button(ImGuiKey_GamepadR1, pad::right_shoulder);
 
     button(ImGuiKey_GamepadL3, pad::left_thumb);
     button(ImGuiKey_GamepadR3, pad::right_thumb);

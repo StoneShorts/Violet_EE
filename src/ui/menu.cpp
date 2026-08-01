@@ -180,8 +180,7 @@ namespace
         key_value("toggle", "END  /  PAGE UP  /  D-pad LEFT + RT");
         key_value("move", "D-pad  or  left stick");
         key_value("select", "A  select,   B  back");
-        key_value("page jump", "LB / RB   (also 10x scroll speed)");
-        key_value("scroll", "right stick");
+        key_value("scroll", "right stick   (LB / RB to slow / speed)");
 
         if (g_module)
         {
