@@ -7,6 +7,8 @@
 
 #include "imgui.h"
 
+#include <cstdlib>
+
 namespace violet::input
 {
 namespace
@@ -98,7 +100,33 @@ const PadState& poll()
             {
                 g_slot = static_cast<int>(i);
                 have   = true;
+
+                // Log where the sticks sit the moment we find the pad. If the
+                // controller is being left alone, these should be near zero -
+                // anything past the deadzone here is physical drift, and it is
+                // the first thing to check if the menu starts behaving as
+                // though a direction is held down.
                 VIOLET_INFO("controller connected in slot {}", i);
+                VIOLET_INFO("  resting sticks: L({}, {})  R({}, {})   deadzones L{} R{}",
+                            xs.Gamepad.sThumbLX, xs.Gamepad.sThumbLY,
+                            xs.Gamepad.sThumbRX, xs.Gamepad.sThumbRY,
+                            XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE,
+                            XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE);
+
+                const int lx = std::abs(static_cast<int>(xs.Gamepad.sThumbLX));
+                const int ly = std::abs(static_cast<int>(xs.Gamepad.sThumbLY));
+                const int rx = std::abs(static_cast<int>(xs.Gamepad.sThumbRX));
+                const int ry = std::abs(static_cast<int>(xs.Gamepad.sThumbRY));
+
+                if (lx > XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE ||
+                    ly > XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE)
+                    VIOLET_WARN("  LEFT stick is drifting past its deadzone at rest");
+
+                if (rx > XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE ||
+                    ry > XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE)
+                    VIOLET_WARN("  RIGHT stick is drifting past its deadzone at rest "
+                                "- expect the menu to scroll on its own");
+
                 break;
             }
         }
@@ -155,24 +183,27 @@ void feed_imgui(const PadState& s, bool suppress_chord_buttons)
     button(ImGuiKey_GamepadFaceLeft,  pad::x);
     button(ImGuiKey_GamepadFaceUp,    pad::y);
 
-    // ---- movement: D-pad AND the left stick -------------------------------
+    // ---- movement: the D-pad, and ONLY the D-pad --------------------------
     //
-    // ImGui moves the navigation cursor from its Dpad keys only - its "LStick"
-    // keys are reserved for scrolling the view. So to let the left stick move
-    // between items as well, we route it onto the Dpad keys rather than the
-    // LStick ones.
-    constexpr int lz = XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE;
+    // The left stick deliberately does not move the navigation cursor.
+    //
+    // It briefly did, and the result was a menu that scrolled through its own
+    // items forever without anyone touching it. An analogue stick almost never
+    // rests at exactly zero - a little wear, and it sits permanently past the
+    // deadzone. That reads as a direction held down, and ImGui quite correctly
+    // repeats a held navigation key. The menu walks itself.
+    //
+    // A D-pad is digital. It cannot drift. So navigation is digital only, and
+    // the sticks are used exclusively for analogue jobs (scrolling), where a
+    // small resting offset produces a small harmless value instead of an
+    // infinitely repeating keypress.
     constexpr int rz = XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE;
 
-    const bool up    = (s.buttons & pad::dpad_up)    != 0 || s.left_y >  lz;
-    const bool down  = (s.buttons & pad::dpad_down)  != 0 || s.left_y < -lz;
-    const bool left  = (s.buttons & pad::dpad_left)  != 0 || s.left_x < -lz;
-    const bool right = (s.buttons & pad::dpad_right) != 0 || s.left_x >  lz;
-
-    io.AddKeyEvent(ImGuiKey_GamepadDpadUp,    up);
-    io.AddKeyEvent(ImGuiKey_GamepadDpadDown,  down);
-    io.AddKeyEvent(ImGuiKey_GamepadDpadRight, right);
-    io.AddKeyEvent(ImGuiKey_GamepadDpadLeft,  left && !suppress_chord_buttons);
+    io.AddKeyEvent(ImGuiKey_GamepadDpadUp,    (s.buttons & pad::dpad_up)    != 0);
+    io.AddKeyEvent(ImGuiKey_GamepadDpadDown,  (s.buttons & pad::dpad_down)  != 0);
+    io.AddKeyEvent(ImGuiKey_GamepadDpadRight, (s.buttons & pad::dpad_right) != 0);
+    io.AddKeyEvent(ImGuiKey_GamepadDpadLeft,
+                   (s.buttons & pad::dpad_left) != 0 && !suppress_chord_buttons);
 
     // ---- bumpers ----------------------------------------------------------
     //
