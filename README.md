@@ -54,8 +54,18 @@ players rather than pedestrians.
 
 ## The native layer
 
-The Self / Weapons / World tabs need **Script Hook V (Enhanced)** — the build matching
-your game version. Drop `ScriptHookV.dll` and `dinput8.dll` next to `GTA5_Enhanced.exe`.
+The Self / Weapons / World / Lobby tabs need **Script Hook V (Enhanced)**, matching your
+game build.
+
+`violet.bat` handles this. If it isn't installed, the script opens the official download
+page, and on the next run it finds the `.zip` in your Downloads, extracts the two files it
+needs and installs them (run it as Administrator for that step — the game lives in
+`Program Files`).
+
+It deliberately does **not** download the archive itself. Pulling an executable from a
+hardcoded mirror and dropping it into your game folder is fine right up until that mirror
+changes hands, so that one click stays yours. It also skips `NativeTrainer.asi` from the
+same zip — that's a second trainer on <kbd>F4</kbd> that would sit on top of Violet.
 
 Violet binds to it **at runtime via `GetProcAddress`**; nothing is vendored here, and a
 static import that failed to resolve would stop the whole DLL loading. Without it you
