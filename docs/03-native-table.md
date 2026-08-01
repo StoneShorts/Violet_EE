@@ -149,14 +149,54 @@ requires.
 **Does:** every one of the 6,748 natives this build registers, each with its current hash
 and the address of the code implementing it, found without any external dependency.
 
-**Does not:** a way to call a native *by name*. Rockstar re-hashed most natives across
-game updates, and public databases list the launch-era hashes. `WAIT` still resolves —
-its hash never changed — but `GET_PLAYER_PED` and friends do not, because their hashes in
-build 1158.13 differ from the published ones.
+**Does not:** a way to call a native *by name*.
 
-So calling a specific named native from scratch needs a hash translation for this build.
-That is a **data** problem, not a reverse-engineering one, and it is why Violet currently
-uses ScriptHookV for the calling layer — it ships that translation and maintains it per
-game version.
+Measured, not assumed. Checking 36 published hashes — the exact set Violet's features use —
+against the decoded table:
 
-The reverse engineering itself is finished.
+```
+  published-hash coverage on this build:
+    WAIT                             RVA 0x920EA0
+
+  1 of 36 published hashes resolve
+```
+
+**Enhanced re-hashed essentially every native.** `WAIT` survives because its hash never
+changed. Nothing else does. And the reassignment is a lookup table, not a formula — there
+is no arithmetic that turns a published hash into a 1158.13 one.
+
+## What full independence would still require
+
+1. **A native invoker.** Build `scrNativeCallContext` ourselves and call handlers directly.
+   Derivable from the disassembly — a few hours.
+2. **The script thread.** Natives are only safe on the game's script tick. Real RE, but
+   findable now that the dump analyses properly.
+3. **Name → handler, per native.** The blocker.
+
+Point 3 has no bulk solution from first principles. A native's hash is only a lookup key —
+what we actually need is its handler address — so a handler can in principle be identified
+by *what its code does*. That works when the code is distinctive: GTA's string hash is
+plainly visible in the disassembly as Jenkins one-at-a-time, complete with its lowercase
+and backslash normalisation.
+
+```asm
+add  ebx, ebp          ; hash += c
+shl  eax, 0Ah          ; hash += hash << 10
+shr  ebp, 6            ; hash ^= hash >> 6
+lea  ebp, [rbp+rbp*8]  ; hash += hash << 3
+shr  eax, 0Bh          ; hash ^= hash >> 11
+shl  edx, 0Fh          ; hash += hash << 15
+```
+
+But most natives are thin wrappers with nothing distinctive about them. `SET_ENTITY_HEALTH`
+reads two arguments and writes a field; so do hundreds of others. Identifying ~40 of them
+this way is ~40 separate reverse-engineering problems, and many have no unique fingerprint
+at all.
+
+**One idea could crack it in bulk.** Natives are registered in sequence — `sub_140922F20`
+registers `WAIT` first, matching `SYSTEM`'s canonical first entry. If registration order
+matches the published databases' declaration order, zipping the two lists recovers all
+6,748 names at once. That is testable, but it needs an *ordered* name list, which is still
+an external data dependency — just a much smaller one than a full hash table.
+
+The reverse engineering of the table is finished. The naming is a data problem.

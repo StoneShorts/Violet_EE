@@ -132,12 +132,84 @@ namespace
             else
                 VIOLET_WARN("  only {}/{} matched", matched, std::size(checks));
 
-            // Sample the decoded set, so the log shows real data rather than
-            // just a count.
+            // ---- coverage: do the published hashes work on this build? ----
+            //
+            // This decides whether the ScriptHookV dependency can go away. If
+            // the hashes Violet already uses are present in the table we
+            // decoded ourselves, we can resolve handlers directly. If they are
+            // absent, this build re-hashed its natives and we would need a
+            // translation for 1158.13 before calling anything by name.
+            struct Named { const char* name; std::uint64_t hash; };
+            constexpr Named published[] = {
+                { "WAIT",                        0x4EDE34FBADD967A6ull },
+                { "PLAYER_PED_ID",               0xD80958FC74E988A6ull },
+                { "PLAYER_ID",                   0x4F8644AF03D0E0D6ull },
+                { "GET_PLAYER_PED",              0x43A66C31C68491C0ull },
+                { "GET_HASH_KEY",                0xD24D37CC275948CCull },
+                { "SET_ENTITY_INVINCIBLE",       0x3882114BDE571AD4ull },
+                { "SET_ENTITY_HEALTH",           0x6B76DC1F3AE6E6A3ull },
+                { "GET_ENTITY_HEALTH",           0xEEF059FAD016D209ull },
+                { "GET_ENTITY_MAX_HEALTH",       0x15D757606D170C3Cull },
+                { "SET_PED_ARMOUR",              0xCEA04D83135264CCull },
+                { "SET_PLAYER_WANTED_LEVEL",     0x39FF19C64EF7DA5Bull },
+                { "SET_PLAYER_WANTED_LEVEL_NOW", 0xE0A7D1E497FFCD6Full },
+                { "GIVE_WEAPON_TO_PED",          0xBF0FD6E56C964FCBull },
+                { "SET_PED_INFINITE_AMMO_CLIP",  0x183DADC6AA953186ull },
+                { "SET_ENTITY_COORDS",           0x06843DA7060A026Bull },
+                { "GET_ENTITY_COORDS",           0x3FEF770D40960D5Aull },
+                { "GET_GROUND_Z_FOR_3D_COORD",   0xC906A7DAB05C8D2Bull },
+                { "GET_VEHICLE_PED_IS_IN",       0x9A9112A0FE9A4713ull },
+                { "IS_WAYPOINT_ACTIVE",          0x1DD1F58F493F1DA5ull },
+                { "GET_FIRST_BLIP_INFO_ID",      0x1BEDE233E6CD2A1Full },
+                { "GET_BLIP_INFO_ID_COORD",      0xFA7C7F0AADF25D09ull },
+                { "SET_CLOCK_TIME",              0x47C3B5848C3E45D8ull },
+                { "CREATE_PED",                  0xD49F9B0955C367DEull },
+                { "DELETE_PED",                  0x9614299DCB53E54Bull },
+                { "REQUEST_MODEL",               0x963D27A58DF860ACull },
+                { "HAS_MODEL_LOADED",            0x98A4EB5D89A0C952ull },
+                { "TASK_WANDER_STANDARD",        0xBB9CE077274F6A1Bull },
+                { "TASK_COMBAT_PED",             0xF166E48407BAC484ull },
+                { "SET_PED_ACCURACY",            0x7AEFB85C1D49DEB6ull },
+                { "SET_PED_COMBAT_ATTRIBUTES",   0x9F7794730795E019ull },
+                { "ADD_RELATIONSHIP_GROUP",      0xF372BC22FCB88606ull },
+                { "ADD_BLIP_FOR_ENTITY",         0x5CDE92C702A8FCE7ull },
+                { "SET_BLIP_SPRITE",             0xDF735600A4696DAFull },
+                { "REMOVE_BLIP",                 0x86A652570E5F25DDull },
+                { "IS_ENTITY_DEAD",              0x5F9532F3B5CC2551ull },
+                { "SET_ENTITY_AS_MISSION_ENTITY",0xAD738C3085FE7E11ull },
+            };
+
+            VIOLET_INFO("");
+            VIOLET_INFO("  published-hash coverage on this build:");
+
+            int present = 0;
+            for (const auto& n : published)
+            {
+                const auto handler = violet::game::find_native_handler(n.hash);
+                if (handler != 0)
+                {
+                    ++present;
+                    VIOLET_INFO("    {:<32} RVA 0x{:X}", n.name,
+                                base ? handler - base : 0);
+                }
+            }
+
+            VIOLET_INFO("");
+            VIOLET_INFO("  {} of {} published hashes resolve",
+                        present, std::size(published));
+
+            if (present == static_cast<int>(std::size(published)))
+                VIOLET_INFO("  -> all of them. ScriptHookV is not needed for lookups.");
+            else if (present == 0)
+                VIOLET_WARN("  -> none. This build re-hashed its natives entirely.");
+            else
+                VIOLET_WARN("  -> partial. Some natives were re-hashed on this build.");
+
+            // Sample the decoded set, so the log shows real data.
             const auto& all = violet::game::decoded_natives();
             VIOLET_INFO("");
-            VIOLET_INFO("  first 8 of {} decoded natives:", all.size());
-            for (std::size_t i = 0; i < all.size() && i < 8; ++i)
+            VIOLET_INFO("  first 6 of {} decoded natives:", all.size());
+            for (std::size_t i = 0; i < all.size() && i < 6; ++i)
                 VIOLET_INFO("    0x{:016X} -> RVA 0x{:X}",
                             all[i].hash, base ? all[i].handler - base : 0);
         }
