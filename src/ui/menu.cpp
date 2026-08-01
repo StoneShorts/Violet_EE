@@ -713,6 +713,19 @@ void draw()
 
     ImGui::Dummy({ 0.0f, 4.0f });
 
+    // The tabs live in a scrolling child so the footer stays pinned.
+    //
+    // Without this the footer is simply the last thing appended to the window,
+    // so the moment a tab's content grew taller than the window the footer -
+    // and the Unload button on it - scrolled off the bottom and looked like it
+    // had disappeared. Reserving space here and letting the body scroll inside
+    // it is the ImGui idiom for a fixed footer.
+    const float footer_height = ImGui::GetTextLineHeightWithSpacing()
+                              + ImGui::GetFrameHeightWithSpacing()
+                              + ImGui::GetStyle().ItemSpacing.y * 2.0f;
+
+    ImGui::BeginChild("##violet_body", { 0.0f, -footer_height });
+
     if (ImGui::BeginTabBar("##violet_tabs"))
     {
         if (ImGui::BeginTabItem("Status"))
@@ -774,11 +787,9 @@ void draw()
         ImGui::EndTabBar();
     }
 
-    // ---- footer, pinned to the bottom of the window ----
-    const float footer = ImGui::GetTextLineHeightWithSpacing() + ImGui::GetStyle().ItemSpacing.y;
-    const float remaining = ImGui::GetContentRegionAvail().y - footer;
-    if (remaining > 0.0f)
-        ImGui::Dummy({ 0.0f, remaining });
+    // EndChild is called whether or not BeginChild returned true - unlike
+    // Begin/End, it is unconditional.
+    ImGui::EndChild();
 
     ImGui::Separator();
     ImGui::PushStyleColor(ImGuiCol_Text, k_text_dim);
@@ -793,20 +804,24 @@ void draw()
         const char* label = g_unload_armed ? "Confirm unload" : "Unload Violet";
         const float width = ImGui::CalcTextSize(label).x + ImGui::GetStyle().FramePadding.x * 2.0f;
 
-        // Right-align by padding the SameLine spacing, NOT with SetCursorPosX.
+        // On its own line, right-aligned the safe way.
         //
-        // Cursor positions are relative to the window's content origin, which
-        // already includes the left padding - so "GetWindowWidth() - width -
-        // WindowPadding.x" overshoots by exactly one padding and pushes the
-        // button past the content region. That grows the content size, which
-        // spawns a horizontal scrollbar, which changes the layout, which moves
-        // the button back. Every frame. The visible symptom is a button that
-        // looks like it is being frantically hovered and clicked by a ghost.
-        const float avail = ImGui::GetContentRegionAvail().x;
-        if (avail > width)
-            ImGui::SameLine(0.0f, avail - width);
-        else
-            ImGui::SameLine();
+        // Two previous attempts at this were wrong in opposite directions.
+        // SetCursorPosX(GetWindowWidth() - width - padding) overshot, because
+        // cursor positions already sit inside the padding - the button spilled
+        // past the content region, which spawned a horizontal scrollbar, which
+        // changed the layout, which moved it back, every frame. Then measuring
+        // GetContentRegionAvail() BEFORE calling SameLine() measured the whole
+        // next line instead of what was left of the current one, and flung the
+        // button off the right edge entirely.
+        //
+        // On a fresh line the cursor starts at the content origin, so the
+        // available width IS the full usable width, and advancing by
+        // (available - button width) lands the right edge exactly on the
+        // margin. No SameLine, nothing to get out of order.
+        const float available = ImGui::GetContentRegionAvail().x;
+        if (available > width)
+            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + available - width);
 
         const ImVec4 idle  = g_unload_armed ? ImVec4{ 0.62f, 0.16f, 0.22f, 0.90f }
                                             : ImVec4{ k_violet.x, k_violet.y, k_violet.z, 0.22f };
