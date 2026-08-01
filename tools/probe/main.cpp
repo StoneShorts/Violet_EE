@@ -228,10 +228,11 @@ namespace
                     std::ofstream f{ out, std::ios::trunc };
                     if (f)
                     {
-                        f << "hash\trva\n";
+                        f << "hash\trva\tblock\tslot\n";
                         for (const auto& e : all)
-                            f << std::format("{:016X}\t{:X}\n",
-                                             e.hash, base ? e.handler - base : 0);
+                            f << std::format("{:016X}\t{:X}\t{:X}\t{}\n",
+                                             e.hash, base ? e.handler - base : 0,
+                                             e.block, e.slot);
                         VIOLET_INFO("");
                         VIOLET_INFO("  wrote {} rows to {}", all.size(), out.string());
                     }
@@ -337,6 +338,104 @@ namespace
             {
                 VIOLET_WARN("  no candidate produced the expected hash");
             }
+        }
+
+        // ---- identify the SYSTEM math natives by calling them -------------
+        //
+        // SYSTEM is the one namespace whose registrar escaped the control-flow
+        // obfuscation, so its 25 handlers were readable straight out of the
+        // disassembly in registration order. Nearly all of them are pure maths.
+        //
+        // Rather than assume an ordering, each is identified by BEHAVIOUR: call
+        // it with inputs whose answer we know and see which one produces it.
+        // That is proof rather than inference, and it exercises the invoker
+        // across int arguments, float arguments and multi-argument calls.
+        //
+        // Indices 0-9 are deliberately skipped: WAIT yields the thread, and the
+        // script-start and timer natives have side effects.
+        {
+            VIOLET_INFO("");
+            VIOLET_INFO("--- identifying SYSTEM natives by behaviour --------");
+
+            const auto mi = violet::process::inspect(nullptr);
+            const std::uintptr_t mbase = mi ? mi->base : 0;
+
+            constexpr std::uintptr_t k_system[] = {
+                0x923290, 0x9232C0, 0x9232F0, 0x923330, 0x923360, 0x923390,
+                0x9233E0, 0x923410, 0x923470, 0x9234B0, 0x9234D0, 0x9234F0,
+                0x923510, 0x923530, 0x923550,
+            };
+
+            const auto as_bits = [](float f)
+            {
+                std::uint32_t b = 0;
+                std::memcpy(&b, &f, 4);
+                return static_cast<std::uint64_t>(b);
+            };
+            const auto as_float = [](std::uint64_t v)
+            {
+                const auto b = static_cast<std::uint32_t>(v);
+                float f = 0.0f;
+                std::memcpy(&f, &b, 4);
+                return f;
+            };
+            // Not called "near" - windows.h still #defines that from the
+            // 16-bit era, and it turns the declaration into a syntax error.
+            const auto close_enough = [](float a, float b)
+            {
+                const float d = a - b;
+                return (d < 0.05f && d > -0.05f);
+            };
+
+            struct Test
+            {
+                const char*   name;
+                std::uint32_t argc;
+                std::uint64_t args[6];
+                bool          float_result;
+                float         expect_f;
+                std::int32_t  expect_i;
+            };
+
+            const Test tests[] = {
+                { "SQRT(16) = 4",           1, { as_bits(16.0f) },                       true,  4.0f,    0 },
+                { "POW(2,10) = 1024",       2, { as_bits(2.0f), as_bits(10.0f) },        true,  1024.0f, 0 },
+                { "FLOOR(3.7) = 3",         1, { as_bits(3.7f) },                        false, 0.0f,    3 },
+                { "CEIL(3.2) = 4",          1, { as_bits(3.2f) },                        false, 0.0f,    4 },
+                { "ROUND(3.6) = 4",         1, { as_bits(3.6f) },                        false, 0.0f,    4 },
+                { "TO_FLOAT(7) = 7.0",      1, { 7ull },                                 true,  7.0f,    0 },
+                { "SHIFT_LEFT(1,4) = 16",   2, { 1ull, 4ull },                           false, 0.0f,    16 },
+                { "SHIFT_RIGHT(256,4)= 16", 2, { 256ull, 4ull },                         false, 0.0f,    16 },
+                { "VDIST(0,0,0,3,4,0)= 5",  6, { as_bits(0), as_bits(0), as_bits(0),
+                                                 as_bits(3.0f), as_bits(4.0f), as_bits(0) },
+                                                                                          true,  5.0f,    0 },
+            };
+
+            int identified = 0;
+            for (const auto& t : tests)
+            {
+                for (const auto rva : k_system)
+                {
+                    std::uint64_t r = 0;
+                    if (!violet::game::call_handler_raw(mbase + rva, t.args, t.argc, r))
+                        continue;
+
+                    const bool hit = t.float_result
+                        ? close_enough(as_float(r), t.expect_f)
+                        : (static_cast<std::int32_t>(r) == t.expect_i);
+
+                    if (hit)
+                    {
+                        VIOLET_INFO("    {:<24} -> RVA 0x{:X}", t.name, rva);
+                        ++identified;
+                        break;
+                    }
+                }
+            }
+
+            VIOLET_INFO("");
+            VIOLET_INFO("  {} of {} identified purely by calling them",
+                        identified, std::size(tests));
         }
 
         VIOLET_INFO("");

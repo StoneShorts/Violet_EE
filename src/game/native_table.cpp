@@ -482,7 +482,8 @@ namespace
 
                     ++natives;
                     if (out != nullptr)
-                        out->push_back({ decode_hash(block, i), handler });
+                        out->push_back({ decode_hash(block, i), handler,
+                                         block, static_cast<std::uint32_t>(i) });
                 }
 
                 block = decode_next(block);

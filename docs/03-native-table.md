@@ -234,9 +234,79 @@ emulating it, which is a substantially harder problem than decoding the table wa
 
 ---
 
+---
+
+## Calling a native from scratch — done, and proven
+
+No ScriptHookV in the path. Our decode supplied the handler, our own call context invoked
+it, and the answer was checked against one computed independently.
+
+```
+test string : "WEAPON_PISTOL"
+expected    : 0x1B06D571   (joaat, computed by us)
+
+RVA 0x1D603D0  called   returned 0x1B06D571   *** MATCH ***
+
+GET_HASH_KEY on build 1158.13:
+  hash    0x70E57E9927B6BA58     (published: 0xD24D37CC275948CC)
+  handler RVA 0x1D603D0
+```
+
+`scrNativeCallContext` could not be read off the disassembly — handlers are jump stubs
+into obfuscated fragments — so the layout was confirmed the only way that counts: a native
+called through it returning a correct answer. A wrong layout cannot produce the right hash,
+and the right hash cannot occur by accident.
+
+### Ten natives identified without any name list
+
+`GET_HASH_KEY` was narrowed statically (native handlers that call GTA's joaat routine,
+ranked by body size) then confirmed by calling. The SYSTEM namespace — the one registrar
+that escaped obfuscation — gave 25 handlers in registration order, and nine were pinned
+purely by behaviour:
+
+| Test | Handler RVA |
+|---|---|
+| `SQRT(16) = 4` | `0x9232F0` |
+| `POW(2,10) = 1024` | `0x923330` |
+| `VDIST(0,0,0,3,4,0) = 5` | `0x923410` |
+| `SHIFT_LEFT(1,4) = 16` | `0x9234B0` |
+| `SHIFT_RIGHT(256,4) = 16` | `0x9234D0` |
+| `FLOOR(3.7) = 3` | `0x9234F0` |
+| `CEIL(3.2) = 4` | `0x923510` |
+| `TO_FLOAT(7) = 7.0` | `0x923550` |
+
+This exercises the invoker across int arguments, float arguments and six-argument calls.
+
+**And it confirms the ordering hypothesis.** Every behaviourally-identified native sits at
+exactly the index canonical SYSTEM ordering predicts — `SQRT` at 12, `POW` at 13, `VDIST`
+at 16, `SHIFT_LEFT` at 18, `FLOOR` at 20, `CEIL` at 21, `TO_FLOAT` at 23. Registration
+order **is** declaration order.
+
+### Why that still doesn't scale: bucket dispersal
+
+If registration order could be recovered for all 45 registrars, zipping against an ordered
+name list would name every native. Statically it can't be — 44 of 45 registrars are
+obfuscated. So the runtime table was tried instead: blocks are allocated as registration
+proceeds, and entries fill a block from slot 0 upward, so ordering by `(block, slot)`
+should reconstruct it.
+
+It doesn't. Each native lands in bucket `hash & 0xFF`, so consecutive registrations go to
+*different* buckets and therefore different blocks. Sorting the 24 known SYSTEM hashes by
+`(block, slot)` puts them at positions 2489–2769 — a tight ~280-wide window, about one
+256-bucket generation, exactly as the structure predicts — but **scrambled within it**.
+
+The bucket hash destroys precisely the signal needed. Ordering survives *within* a bucket
+and nowhere else.
+
+---
+
 ## Bottom line
 
-The reverse engineering of the table is **finished and verified**. What remains is not
-reverse engineering — it is a naming problem that Rockstar deliberately scrambled twice
-over: once by reassigning every hash, and again by obfuscating the code that would reveal
-the mapping.
+The reverse engineering is **finished and proven end to end**: table located, obfuscation
+decoded from the game's own `registerNative`, 6,748 natives enumerated, an invoker built
+and verified, and ten natives identified with no external name list at all.
+
+What remains is naming the rest — and Rockstar scrambled that three ways over. Every hash
+reassigned, the registration code control-flow obfuscated, and the one remaining ordering
+signal destroyed by the bucket hash. That is a data problem, not a reverse-engineering one,
+and it is the only reason Violet's feature set still routes through ScriptHookV.

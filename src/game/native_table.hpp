@@ -158,6 +158,14 @@ namespace violet::game
     {
         std::uint64_t  hash    = 0;
         std::uintptr_t handler = 0;
+
+        // Where this entry physically lives. Registration blocks are allocated
+        // one after another as registration proceeds, and entries fill a block
+        // from slot 0 upward - so ordering by (block, slot) reconstructs the
+        // order the natives were registered in, which the SYSTEM namespace
+        // proved is their canonical declaration order.
+        std::uintptr_t block = 0;
+        std::uint32_t  slot  = 0;
     };
 
     struct DecodedTable
