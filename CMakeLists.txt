@@ -91,8 +91,10 @@ add_library(Violet SHARED
     src/core/log.cpp
     src/core/process.cpp
     src/input/gamepad.cpp
+    src/game/native_table.cpp
     src/mem/dump.cpp
     src/mem/pattern.cpp
+    src/mem/regions.cpp
     src/render/overlay.cpp
     src/ui/menu.cpp
 )
@@ -120,6 +122,24 @@ target_link_libraries(inject PRIVATE violet_common_flags)
 # process starts with no console of its own - which is what lets Violet's
 # AllocConsole visibly succeed.
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# probe.dll  --  analysis only, no UI.
+#
+# Safe to inject into a session that already has Violet running: it has no
+# window, no hotkeys, and writes to its own log, then unloads itself. Lets us
+# iterate on "what are we looking for" against a live game without restarting
+# anything.
+# ---------------------------------------------------------------------------
+add_library(probe SHARED
+    tools/probe/main.cpp
+    src/core/log.cpp
+    src/core/process.cpp
+    src/mem/regions.cpp
+    src/game/native_table.cpp
+)
+target_include_directories(probe PRIVATE src)
+target_link_libraries(probe PRIVATE violet_common_flags)
+
 add_executable(testhost tools/testhost/main.cpp)
 target_link_libraries(testhost PRIVATE violet_common_flags)
 set_target_properties(testhost PROPERTIES WIN32_EXECUTABLE TRUE)

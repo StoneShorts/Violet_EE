@@ -32,7 +32,7 @@ namespace
     }
 }
 
-void init(void* self, bool also_open_console)
+void init(void* self, bool also_open_console, const wchar_t* filename)
 {
     // The log goes to a fixed location: %LOCALAPPDATA%\Violet\Violet.log
     //
@@ -56,7 +56,7 @@ void init(void* self, bool also_open_console)
 
         std::error_code ec;
         std::filesystem::create_directories(log_path, ec);
-        log_path /= L"Violet.log";
+        log_path /= filename;
     }
     else
     {
@@ -64,7 +64,7 @@ void init(void* self, bool also_open_console)
         wchar_t path[MAX_PATH]{};
         GetModuleFileNameW(static_cast<HMODULE>(self), path, MAX_PATH);
         log_path = path;
-        log_path.replace_filename(L"Violet.log");
+        log_path.replace_filename(filename);
     }
 
     // trunc = start fresh each launch. You want the current run's log, not a

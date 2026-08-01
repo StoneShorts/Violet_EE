@@ -189,6 +189,68 @@ That is what `keep_on_top()` in `render/overlay.cpp` exists for.
 
 ---
 
+---
+
+## The native table: what we ruled out
+
+Three automated hunts, all run against a live session via `probe.dll`. All three
+came back negative, and the negatives are informative.
+
+### 1. The classic structure is not present
+
+Searched every writable, non-executable section of the module (5.1 M slots in `.data`
+alone, 112 ms) for the historical RAGE layout — `next` at `+0x00`, seven handlers at
+`+0x08`, a count of 1–7 at `+0x40`.
+
+**Best 256-slot window held 29 valid blocks.** A real table would hold most of 256.
+
+### 2. Native hashes are NOT stored in plaintext
+
+Swept all 7.6 GB of readable memory for two hashes verified against the CitizenFX
+native database:
+
+| Native | Hash |
+|---|---|
+| `GET_PLAYER_PED` | `0x43A66C31C68491C0` |
+| `SET_ENTITY_COORDS` | `0x06843DA7060A026B` |
+
+**Two hits each — and both were the probe's own constants.** The bytes around them
+decoded to `"GET_PLAY" "ER_PED" "SET_ENTI" "TY_COORD"`: our own `k_known` array and its
+string literals, sitting in the DLL we had just injected.
+
+The hashes are encrypted in memory. The table cannot be found by searching for them.
+
+### 3. There is no linked list of code-pointer blocks
+
+The one property a vtable cannot imitate: registration blocks form a chain, each
+pointing at the next. Tested handler-array offsets `+0x08`, `+0x10`, `+0x18`, `+0x20`.
+
+**Longest chain at any offset: 2 blocks. Zero chains of 8 or more.**
+
+For contrast, the earlier layout probe found **21,128** blocks with runs of code pointers
+starting at `+0x00` — those are ordinary C++ vtables, and they are everywhere. So the
+scan is working; there simply is no chain to find.
+
+### What that leaves
+
+Hashes are encrypted, and the absence of *any* chain of blocks containing raw code
+pointers strongly suggests **the handler pointers are encrypted too**. If a handler is
+stored XOR'd, or as an RVA, or behind an indirection, then "does this value point at
+executable memory?" can never fire — which is exactly what we observe.
+
+This is consistent with what later GTA V builds are known to do, and it is why tools
+targeting the game need updating on every patch.
+
+**So the way in is `GetNativeHandler` itself.** That function takes a hash and returns a
+handler, which means it necessarily contains the decryption. Find it and the encryption
+stops mattering — we call it rather than reimplement it.
+
+Finding it means disassembly, which means the memory dump, which is why the IDA analysis
+matters. Legacy signatures will not help: Enhanced is a Clang build (see the PDB path
+above) and every published pattern came from MSVC.
+
+---
+
 ## Open questions
 
 - [ ] Which mitigations are set? (`DllCharacteristics` — added to recon, not yet re-run.)

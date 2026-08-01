@@ -13,6 +13,7 @@
 //
 #include "core/log.hpp"
 #include "core/process.hpp"
+#include "game/native_table.hpp"
 #include "mem/pattern.hpp"
 #include "render/overlay.hpp"
 
@@ -212,6 +213,39 @@ namespace
 
             if (!test.passed)
                 VIOLET_ERROR("  scanner is NOT trustworthy - do not rely on results");
+        }
+
+        // The native table hunt, run automatically at startup and reported to
+        // the log. Everything a mod menu can do depends on this one lookup.
+        VIOLET_INFO("");
+        VIOLET_INFO("--- native registration table -----------------------");
+        {
+            const auto scan = violet::game::find_native_table();
+
+            VIOLET_INFO("  scan took : {:.0f} ms", scan.elapsed_ms);
+            VIOLET_INFO("  result    : {}", scan.found ? "FOUND" : "not found");
+            VIOLET_INFO("  detail    : {}", scan.detail);
+
+            if (scan.table != 0)
+            {
+                VIOLET_INFO("  table     : 0x{:X}", scan.table);
+                VIOLET_INFO("  table RVA : 0x{:X}   (IDA 0x{:X})",
+                            scan.table_rva, 0x140000000ull + scan.table_rva);
+                VIOLET_INFO("  slots     : {} of 256 populated", scan.slots);
+                VIOLET_INFO("  blocks    : {}", scan.blocks);
+                VIOLET_INFO("  natives   : {}", scan.natives);
+
+                for (const auto& s : scan.samples)
+                    VIOLET_INFO("    hash 0x{:016X}  ->  handler 0x{:X}", s.hash, s.handler);
+            }
+
+            // If the assumed layout did not pan out, work out the real one
+            // from the data instead of guessing again.
+            if (!scan.found)
+            {
+                VIOLET_INFO("");
+                violet::game::probe_layouts();
+            }
         }
 
         VIOLET_INFO("");

@@ -25,7 +25,9 @@ namespace violet::log
     // use it to work out where Violet.dll lives on disk, so the log file lands
     // next to the DLL instead of in whatever the host process happens to have
     // set as its current working directory.
-    void init(void* self, bool also_open_console);
+    // `filename` lets a second, separately-injected component (the probe tool)
+    // write its own log rather than truncating the running menu's.
+    void init(void* self, bool also_open_console, const wchar_t* filename = L"Violet.log");
 
     void shutdown();
 
