@@ -30,7 +30,27 @@ controller-navigable ImGui overlay, and drives a working set of trainer features
 | 5 | Signature scanner, memory dumper, live probe | ✅ |
 | 5b | From-scratch native table | 🔬 research, see below |
 | 6 | Trainer features | ✅ god mode · health · armour · wanted level · weapons · teleport · time · weather |
-| 7 | AI NPC "offline lobby" | 🚧 next |
+| 7 | AI NPC "offline lobby" | ✅ |
+
+## The offline lobby
+
+Story Mode, populated. Spawned peds that roam, carry weapons, fight each other and you,
+wear gamertags over their heads and blips on the minimap, and rejoin after they die.
+
+There is no networking and nothing connects anywhere — it's a behaviour state machine
+driving ordinary peds, which is exactly what makes it possible offline.
+
+* **Up to 24 "players"**, spawned on a ring around you and retired past 400 m, so the
+  lobby follows you rather than smearing across the map.
+* **Their own relationship group**, so making them hostile turns *them* against you
+  instead of the entire city.
+* **Gamertags rendered by Violet's own overlay** — the engine reports where a world point
+  lands on screen, and the DirectComposition overlay draws the tag and health bar. No view
+  matrix to hunt for.
+* Adjustable count, spawn radius, accuracy, hostility, in-fighting.
+
+Peds use the `mp_m_freemode_01` / `mp_f_freemode_01` online player models, so they read as
+players rather than pedestrians.
 
 ## The native layer
 

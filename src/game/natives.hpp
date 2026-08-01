@@ -51,6 +51,62 @@ namespace violet::game::natives
 
     // ---- misc ----
     inline constexpr std::uint64_t GET_HASH_KEY                = 0xD24D37CC275948CC;
+
+    // -----------------------------------------------------------------------
+    // AI lobby (stage 7)
+    // -----------------------------------------------------------------------
+    //
+    // Same rule as above: every value is looked up, never recalled. A zero here
+    // means "not yet filled in", and lobby_ready() below refuses to run while
+    // any of them is zero - so a missing hash disables the feature instead of
+    // calling native 0 with six arguments and taking the game down.
+    inline constexpr std::uint64_t CREATE_PED                       = 0xD49F9B0955C367DE;
+    inline constexpr std::uint64_t DELETE_PED                       = 0x9614299DCB53E54B;
+    inline constexpr std::uint64_t REQUEST_MODEL                    = 0x963D27A58DF860AC;
+    inline constexpr std::uint64_t HAS_MODEL_LOADED                 = 0x98A4EB5D89A0C952;
+    inline constexpr std::uint64_t SET_MODEL_AS_NO_LONGER_NEEDED    = 0xE532F5D78798DAAB;
+    inline constexpr std::uint64_t SET_PED_DEFAULT_COMPONENT_VARIATION = 0x45EEE61580806D63;
+
+    inline constexpr std::uint64_t TASK_WANDER_STANDARD             = 0xBB9CE077274F6A1B;
+    inline constexpr std::uint64_t TASK_COMBAT_PED                  = 0xF166E48407BAC484;
+    inline constexpr std::uint64_t SET_PED_COMBAT_ATTRIBUTES        = 0x9F7794730795E019;
+    inline constexpr std::uint64_t SET_PED_ACCURACY                 = 0x7AEFB85C1D49DEB6;
+    inline constexpr std::uint64_t SET_ENTITY_AS_MISSION_ENTITY     = 0xAD738C3085FE7E11;
+
+    inline constexpr std::uint64_t ADD_RELATIONSHIP_GROUP           = 0xF372BC22FCB88606;
+    inline constexpr std::uint64_t SET_PED_RELATIONSHIP_GROUP_HASH  = 0xC80A74AC829DDD92;
+    inline constexpr std::uint64_t SET_RELATIONSHIP_BETWEEN_GROUPS  = 0xBF25EB89375A37AD;
+
+    inline constexpr std::uint64_t ADD_BLIP_FOR_ENTITY              = 0x5CDE92C702A8FCE7;
+    inline constexpr std::uint64_t SET_BLIP_SPRITE                  = 0xDF735600A4696DAF;
+    inline constexpr std::uint64_t SET_BLIP_COLOUR                  = 0x03D7FB09E75D6B7E;
+    inline constexpr std::uint64_t SET_BLIP_SCALE                   = 0xD38744167B2FA257;
+    inline constexpr std::uint64_t REMOVE_BLIP                      = 0x86A652570E5F25DD;
+
+    inline constexpr std::uint64_t IS_ENTITY_DEAD                   = 0x5F9532F3B5CC2551;
+    inline constexpr std::uint64_t GET_ENTITY_HEALTH                = 0xEEF059FAD016D209;
+    inline constexpr std::uint64_t GET_SCREEN_COORD_FROM_WORLD_COORD= 0x34E82F05DF2974F5;
+
+    // Every hash the lobby needs. Checked at startup so the feature is simply
+    // unavailable rather than dangerous when one is missing.
+    inline constexpr std::uint64_t lobby_required[] = {
+        CREATE_PED, DELETE_PED, REQUEST_MODEL, HAS_MODEL_LOADED,
+        SET_MODEL_AS_NO_LONGER_NEEDED, SET_PED_DEFAULT_COMPONENT_VARIATION,
+        TASK_WANDER_STANDARD, TASK_COMBAT_PED, SET_PED_COMBAT_ATTRIBUTES,
+        SET_PED_ACCURACY, SET_ENTITY_AS_MISSION_ENTITY, ADD_RELATIONSHIP_GROUP,
+        SET_PED_RELATIONSHIP_GROUP_HASH, SET_RELATIONSHIP_BETWEEN_GROUPS,
+        ADD_BLIP_FOR_ENTITY, SET_BLIP_SPRITE, SET_BLIP_COLOUR, SET_BLIP_SCALE,
+        REMOVE_BLIP, IS_ENTITY_DEAD, GET_ENTITY_HEALTH,
+        GET_SCREEN_COORD_FROM_WORLD_COORD,
+    };
+
+    constexpr bool lobby_hashes_present()
+    {
+        for (const auto hash : lobby_required)
+            if (hash == 0)
+                return false;
+        return true;
+    }
 }
 
 namespace violet::game

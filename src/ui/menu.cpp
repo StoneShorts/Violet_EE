@@ -3,6 +3,7 @@
 #include "core/log.hpp"
 #include "core/process.hpp"
 #include "game/features.hpp"
+#include "game/lobby.hpp"
 #include "game/scripthook.hpp"
 #include "input/gamepad.hpp"
 #include "mem/dump.hpp"
@@ -753,6 +754,202 @@ namespace
         ImGui::EndDisabled();
     }
 
+    void tab_ai()
+    {
+        using namespace violet::game;
+
+        auto& cfg = lobby_config();
+
+        if (!lobby_available())
+        {
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4{ 0.95f, 0.72f, 0.30f, 1.0f });
+            ImGui::TextWrapped("Lobby unavailable - %s", lobby_unavailable_reason());
+            ImGui::PopStyleColor();
+            placeholder("Install Script Hook V (Enhanced) to enable it.");
+            return;
+        }
+
+        char buf[128];
+
+        heading("Session");
+
+        bool enabled = cfg.enabled.load();
+        if (ImGui::Checkbox("Run the lobby", &enabled))
+            cfg.enabled = enabled;
+
+        ImGui::SameLine();
+        if (ImGui::Button("Clear all"))
+            cfg.want_clear = true;
+        ImGui::SameLine();
+        if (ImGui::Button("Respawn all"))
+            cfg.want_respawn_all = true;
+
+        std::snprintf(buf, sizeof(buf), "%d alive of %d",
+                      lobby_alive_count(), lobby_total_count());
+        key_value("population", buf, true);
+
+        int desired = cfg.desired_bots.load();
+        ImGui::SetNextItemWidth(220.0f);
+        if (ImGui::SliderInt("players", &desired, 0, 24))
+            cfg.desired_bots = desired;
+
+        float radius = cfg.spawn_radius.load();
+        ImGui::SetNextItemWidth(220.0f);
+        if (ImGui::SliderFloat("spawn radius", &radius, 20.0f, 150.0f, "%.0f m"))
+            cfg.spawn_radius = radius;
+
+        ImGui::PushStyleColor(ImGuiCol_Text, k_text_dim);
+        ImGui::TextWrapped("Spawns one per frame - twenty at once is a visible hitch. "
+                           "They retire past 400 m so the lobby stays around you.");
+        ImGui::PopStyleColor();
+
+        heading("Behaviour");
+
+        bool hostile = cfg.hostile_to_player.load();
+        if (ImGui::Checkbox("Hostile to me", &hostile))
+            cfg.hostile_to_player = hostile;
+
+        bool infight = cfg.fight_each_other.load();
+        if (ImGui::Checkbox("Fight each other", &infight))
+            cfg.fight_each_other = infight;
+
+        bool armed = cfg.give_weapons.load();
+        if (ImGui::Checkbox("Armed", &armed))
+            cfg.give_weapons = armed;
+
+        int accuracy = cfg.accuracy.load();
+        ImGui::SetNextItemWidth(220.0f);
+        if (ImGui::SliderInt("accuracy", &accuracy, 0, 100, "%d%%"))
+            cfg.accuracy = accuracy;
+
+        ImGui::PushStyleColor(ImGuiCol_Text, k_text_dim);
+        ImGui::TextWrapped("They get their own relationship group, so turning hostility "
+                           "on makes THEM hate you - not the entire city.");
+        ImGui::PopStyleColor();
+
+        heading("Display");
+
+        bool blips = cfg.show_blips.load();
+        if (ImGui::Checkbox("Minimap blips", &blips))
+            cfg.show_blips = blips;
+
+        bool tags = cfg.show_nametags.load();
+        if (ImGui::Checkbox("Gamertags", &tags))
+            cfg.show_nametags = tags;
+
+        heading("Players");
+
+        BotView bots[32];
+        const std::size_t count = lobby_snapshot(bots, std::size(bots));
+
+        if (ImGui::BeginTable("##bots", 4,
+                              ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders |
+                              ImGuiTableFlags_ScrollY, { 0.0f, 200.0f }))
+        {
+            ImGui::TableSetupColumn("gamertag");
+            ImGui::TableSetupColumn("state",  ImGuiTableColumnFlags_WidthFixed, 70.0f);
+            ImGui::TableSetupColumn("hp",     ImGuiTableColumnFlags_WidthFixed, 50.0f);
+            ImGui::TableSetupColumn("dist",   ImGuiTableColumnFlags_WidthFixed, 60.0f);
+            ImGui::TableSetupScrollFreeze(0, 1);
+            ImGui::TableHeadersRow();
+
+            for (std::size_t i = 0; i < count; ++i)
+            {
+                const auto& b = bots[i];
+
+                const char* state_text = "dead";
+                ImVec4 state_colour = k_text_dim;
+                switch (b.state)
+                {
+                    case BotState::Wander:   state_text = "roaming"; state_colour = k_text; break;
+                    case BotState::Combat:   state_text = "fighting";
+                                             state_colour = { 0.95f, 0.45f, 0.40f, 1.0f }; break;
+                    case BotState::Spawning: state_text = "joining"; break;
+                    default: break;
+                }
+
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn(); ImGui::TextUnformatted(b.name);
+
+                ImGui::TableNextColumn();
+                ImGui::PushStyleColor(ImGuiCol_Text, state_colour);
+                ImGui::TextUnformatted(state_text);
+                ImGui::PopStyleColor();
+
+                ImGui::PushFont(g_font_mono, 0.0f);
+                ImGui::TableNextColumn(); ImGui::Text("%d", b.health);
+                ImGui::TableNextColumn(); ImGui::Text("%.0fm", b.distance);
+                ImGui::PopFont();
+            }
+            ImGui::EndTable();
+        }
+    }
+
+    // Gamertags floating over each bot, drawn by Violet's own overlay.
+    //
+    // The engine tells us where a world point lands on screen; we do the
+    // drawing. Projecting it ourselves would mean locating the view matrix in
+    // memory - exactly the offset hunting this avoids.
+    void draw_nametags()
+    {
+        using namespace violet::game;
+
+        if (!lobby_available() || !lobby_config().show_nametags.load() ||
+            !lobby_config().enabled.load())
+            return;
+
+        BotView bots[32];
+        const std::size_t count = lobby_snapshot(bots, std::size(bots));
+        if (count == 0)
+            return;
+
+        const ImGuiViewport* vp = ImGui::GetMainViewport();
+        ImDrawList* draw = ImGui::GetForegroundDrawList();
+
+        for (std::size_t i = 0; i < count; ++i)
+        {
+            const auto& b = bots[i];
+
+            if (!b.on_screen || b.state == BotState::Dead || b.ped == 0)
+                continue;
+            if (b.distance > 250.0f)
+                continue;
+
+            const ImVec2 at{ vp->WorkPos.x + b.screen_x * vp->WorkSize.x,
+                             vp->WorkPos.y + b.screen_y * vp->WorkSize.y };
+
+            // Fade with distance so a crowded street stays readable.
+            const float alpha = b.distance < 100.0f
+                              ? 1.0f
+                              : 1.0f - ((b.distance - 100.0f) / 150.0f);
+
+            const ImU32 name_colour = ImGui::GetColorU32(
+                ImVec4{ k_violet.x, k_violet.y, k_violet.z, alpha });
+
+            const ImVec2 size = ImGui::CalcTextSize(b.name);
+            const ImVec2 pos{ at.x - size.x * 0.5f, at.y - size.y };
+
+            // Cheap outline, so tags stay legible against a bright sky.
+            const ImU32 shadow = ImGui::GetColorU32(ImVec4{ 0.0f, 0.0f, 0.0f, alpha * 0.85f });
+            draw->AddText({ pos.x + 1.0f, pos.y + 1.0f }, shadow, b.name);
+            draw->AddText(pos, name_colour, b.name);
+
+            // A slim health bar underneath.
+            const float bar_width = 46.0f;
+            const float fraction  = (std::min)(1.0f, (std::max)(0.0f,
+                                    static_cast<float>(b.health - 100) / 100.0f));
+
+            const ImVec2 bar_min{ at.x - bar_width * 0.5f, pos.y + size.y + 2.0f };
+            const ImVec2 bar_max{ bar_min.x + bar_width,   bar_min.y + 3.0f };
+
+            draw->AddRectFilled(bar_min, bar_max,
+                                ImGui::GetColorU32(ImVec4{ 0, 0, 0, alpha * 0.6f }));
+            draw->AddRectFilled(bar_min,
+                                { bar_min.x + bar_width * fraction, bar_max.y },
+                                ImGui::GetColorU32(ImVec4{ 0.85f, 0.25f, 0.30f, alpha }));
+        }
+    }
+
     void tab_status(const ImGuiViewport* vp)
     {
         char buf[128];
@@ -889,6 +1086,10 @@ void draw()
 
     draw_watermark();
 
+    // Gamertags are part of the world, not the menu - they stay up whether or
+    // not Violet is open.
+    draw_nametags();
+
     if (!violet::render::menu_visible())
     {
         g_unload_armed = false;   // closing the menu cancels a pending unload
@@ -970,13 +1171,9 @@ void draw()
             ImGui::EndTabItem();
         }
 
-        if (ImGui::BeginTabItem("AI"))
+        if (ImGui::BeginTabItem("Lobby"))
         {
-            placeholder(
-                "The offline lobby. Stage 7.\n\n"
-                "Spawned peds running a behaviour state machine - wander, drive, engage, "
-                "flee, regroup - with nametags and blips, so single player feels populated "
-                "the way a GTA Online session does.");
+            tab_ai();
             ImGui::EndTabItem();
         }
 

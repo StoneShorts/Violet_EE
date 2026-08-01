@@ -92,6 +92,7 @@ add_library(Violet SHARED
     src/core/process.cpp
     src/input/gamepad.cpp
     src/game/features.cpp
+    src/game/lobby.cpp
     src/game/native_table.cpp
     src/game/scripthook.cpp
     src/mem/dump.cpp

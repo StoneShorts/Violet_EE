@@ -1,6 +1,7 @@
 #include "game/features.hpp"
 
 #include "core/log.hpp"
+#include "game/lobby.hpp"
 #include "game/natives.hpp"
 #include "game/scripthook.hpp"
 
@@ -213,5 +214,8 @@ void features_tick()
             g_state.last_result = Result_Ok;
         }
     }
+
+    // The offline lobby drives itself from here - same thread, same frame.
+    lobby_tick();
 }
 }
