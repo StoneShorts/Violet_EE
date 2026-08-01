@@ -193,10 +193,50 @@ reads two arguments and writes a field; so do hundreds of others. Identifying ~4
 this way is ~40 separate reverse-engineering problems, and many have no unique fingerprint
 at all.
 
-**One idea could crack it in bulk.** Natives are registered in sequence — `sub_140922F20`
-registers `WAIT` first, matching `SYSTEM`'s canonical first entry. If registration order
-matches the published databases' declaration order, zipping the two lists recovers all
-6,748 names at once. That is testable, but it needs an *ordered* name list, which is still
-an external data dependency — just a much smaller one than a full hash table.
+### The bulk approach, tried and failed
 
-The reverse engineering of the table is finished. The naming is a data problem.
+Natives are registered in sequence, and `sub_140922F20` registers `WAIT` first — matching
+`SYSTEM`'s canonical first entry. If registration order matched the published databases'
+declaration order, zipping the two lists would recover all 6,748 names at once.
+
+**It doesn't work.** The registration code is control-flow obfuscated.
+
+Finding the real entry point was straightforward: `sub_140920D50(hash, handler)` is the
+two-argument public form, which tail-jumps through a thunk that supplies the table and
+lands in `sub_140920D70`. There are **6,667 calls to it across 45 registrar functions** —
+and 45 is about the number of native namespaces, with the largest registrar holding 893
+entries, consistent with `NETWORK` being the biggest namespace. The shape is right.
+
+But the arguments are not set anywhere near their call:
+
+```asm
+loc_141BD3A25:
+                call    sub_140920D50
+                jmp     sub_1453347D4          ; flow continues elsewhere
+; -------------------------------------------
+                db 90h
+                db 0FFh, 0C9h, 89h, 0CBh, 53h, 48h, 8Dh, 1Dh, 0C6h, 1Ch
+```
+
+Those bytes are `dec ecx / mov ebx,ecx / push rbx / lea rbx,[rip+…]` — real code IDA left
+as data. Each registration is split into fragments stitched together by jumps and scattered
+through the binary, so `mov rcx, <hash>` and `lea rdx, <handler>` are nowhere near the
+`call` that consumes them.
+
+An extractor requiring the operands within six lines of the call finds **zero** sites. A
+loose one "finds" 6,667 — all reporting the same stale operand, which is the tell.
+
+Only `sub_140922F20` is clean, and only because those 26 SYSTEM natives escaped the
+obfuscation pass.
+
+Recovering the order would mean following the control flow through the obfuscation or
+emulating it, which is a substantially harder problem than decoding the table was.
+
+---
+
+## Bottom line
+
+The reverse engineering of the table is **finished and verified**. What remains is not
+reverse engineering — it is a naming problem that Rockstar deliberately scrambled twice
+over: once by reassigning every hash, and again by obfuscating the code that would reveal
+the mapping.
