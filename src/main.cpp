@@ -13,6 +13,7 @@
 //
 #include "core/log.hpp"
 #include "core/process.hpp"
+#include "mem/pattern.hpp"
 #include "render/overlay.hpp"
 
 #include <Windows.h>
@@ -191,6 +192,27 @@ namespace
         report_module_layout();
         report_loaded_modules();
         report_environment();
+
+        // Prove the signature scanner works before anything depends on it.
+        // A scanner that is subtly wrong does not crash - it just fails to find
+        // things that are definitely there.
+        VIOLET_INFO("");
+        VIOLET_INFO("--- scanner self-test -------------------------------");
+        {
+            const auto test = violet::mem::self_test();
+            VIOLET_INFO("  result   : {}", test.passed ? "PASS" : "FAIL");
+            VIOLET_INFO("  detail   : {}", test.detail);
+            VIOLET_INFO("  swept    : {:.1f} MB in {:.1f} ms ({:.0f} MB/s)",
+                        static_cast<double>(test.bytes_scanned) / (1024.0 * 1024.0),
+                        test.elapsed_ms,
+                        test.elapsed_ms > 0.0
+                            ? (static_cast<double>(test.bytes_scanned) / (1024.0 * 1024.0))
+                                  / (test.elapsed_ms / 1000.0)
+                            : 0.0);
+
+            if (!test.passed)
+                VIOLET_ERROR("  scanner is NOT trustworthy - do not rely on results");
+        }
 
         VIOLET_INFO("");
         VIOLET_INFO("recon complete - starting overlay");

@@ -3,6 +3,7 @@
 #include "core/log.hpp"
 #include "core/process.hpp"
 #include "input/gamepad.hpp"
+#include "mem/pattern.hpp"
 #include "render/overlay.hpp"
 
 #include <Windows.h>
@@ -12,6 +13,7 @@
 #include <cstdio>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace violet::ui
 {
@@ -34,6 +36,17 @@ namespace
 
     // Two-step guard on the unload button - see the footer in draw().
     bool g_unload_armed = false;
+
+    // ---- signature scanner tab state ----
+    char        g_sig_input[512] = "48 89 5C 24 ? 57 48 83 EC";
+    std::vector<std::uintptr_t> g_sig_hits;
+    std::string g_sig_status  = "Enter an IDA-style signature and press Scan.";
+    bool        g_sig_ok      = true;
+    double      g_sig_ms      = 0.0;
+    std::size_t g_sig_bytes   = 0;
+    std::size_t g_sig_fixed   = 0;
+
+    std::optional<violet::mem::SelfTest> g_selftest;
 
     // -----------------------------------------------------------------------
     // fonts
@@ -156,6 +169,134 @@ namespace
     // -----------------------------------------------------------------------
     // tabs
     // -----------------------------------------------------------------------
+
+    void run_signature_scan()
+    {
+        g_sig_hits.clear();
+
+        const auto pattern = violet::mem::Pattern::parse(g_sig_input);
+        if (!pattern)
+        {
+            g_sig_ok     = false;
+            g_sig_status = "Malformed signature. Use hex byte pairs and ? for wildcards.";
+            return;
+        }
+
+        g_sig_fixed = pattern->fixed_count();
+        g_sig_hits  = violet::mem::scan_all(*pattern, 64);
+        g_sig_ms    = violet::mem::last_scan_ms();
+        g_sig_bytes = violet::mem::last_scan_bytes();
+        g_sig_ok    = true;
+
+        if (g_sig_hits.empty())
+            g_sig_status = "No match. Try wildcarding more bytes.";
+        else if (g_sig_hits.size() == 1)
+            g_sig_status = "Unique match - this is what you want.";
+        else
+            g_sig_status = "Matched in several places; add more fixed bytes to disambiguate.";
+
+        VIOLET_INFO("scan '{}' -> {} match(es) in {:.1f} ms",
+                    pattern->text(), g_sig_hits.size(), g_sig_ms);
+    }
+
+    void tab_scanner()
+    {
+        heading("Self-test");
+
+        if (!g_selftest)
+            g_selftest = violet::mem::self_test();
+
+        const bool passed = g_selftest->passed;
+        ImGui::PushStyleColor(ImGuiCol_Text, passed ? ImVec4{ 0.44f, 0.85f, 0.52f, 1.0f }
+                                                    : ImVec4{ 0.90f, 0.32f, 0.34f, 1.0f });
+        ImGui::PushFont(g_font_bold, 0.0f);
+        ImGui::TextUnformatted(passed ? "PASS" : "FAIL");
+        ImGui::PopFont();
+        ImGui::PopStyleColor();
+
+        ImGui::PushStyleColor(ImGuiCol_Text, k_text_dim);
+        ImGui::TextWrapped("%s", g_selftest->detail.c_str());
+        ImGui::PopStyleColor();
+
+        char buf[128];
+        const double mb = static_cast<double>(g_selftest->bytes_scanned) / (1024.0 * 1024.0);
+        std::snprintf(buf, sizeof(buf), "%.1f MB in %.1f ms", mb, g_selftest->elapsed_ms);
+        key_value("swept", buf, true);
+
+        if (g_selftest->elapsed_ms > 0.0)
+        {
+            std::snprintf(buf, sizeof(buf), "%.0f MB/s", mb / (g_selftest->elapsed_ms / 1000.0));
+            key_value("throughput", buf, true);
+        }
+
+        heading("Try a signature");
+
+        ImGui::PushStyleColor(ImGuiCol_Text, k_text_dim);
+        ImGui::TextWrapped("Hex byte pairs, ? for a wildcard. Wildcard the bytes that "
+                           "change between builds - call offsets, RIP displacements - "
+                           "and keep the opcodes.");
+        ImGui::PopStyleColor();
+
+        ImGui::Dummy({ 0.0f, 4.0f });
+
+        ImGui::PushFont(g_font_mono, 0.0f);
+        ImGui::SetNextItemWidth(-1.0f);
+        const bool submitted = ImGui::InputText("##signature", g_sig_input, sizeof(g_sig_input),
+                                                ImGuiInputTextFlags_EnterReturnsTrue);
+        ImGui::PopFont();
+
+        if (ImGui::Button("Scan") || submitted)
+            run_signature_scan();
+
+        ImGui::SameLine();
+        ImGui::PushStyleColor(ImGuiCol_Text, g_sig_ok ? k_text_dim
+                                                      : ImVec4{ 0.90f, 0.32f, 0.34f, 1.0f });
+        ImGui::TextWrapped("%s", g_sig_status.c_str());
+        ImGui::PopStyleColor();
+
+        if (!g_sig_hits.empty())
+        {
+            std::snprintf(buf, sizeof(buf), "%zu match(es), %.1f ms, %zu fixed bytes",
+                          g_sig_hits.size(), g_sig_ms, g_sig_fixed);
+            key_value("result", buf, true);
+
+            if (g_sig_fixed < 6)
+            {
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4{ 0.95f, 0.72f, 0.30f, 1.0f });
+                ImGui::TextWrapped("Only %zu bytes actually have to match - that is very "
+                                   "loose and will hit unrelated code.", g_sig_fixed);
+                ImGui::PopStyleColor();
+            }
+
+            ImGui::Dummy({ 0.0f, 4.0f });
+
+            // RVA is the durable form; the IDA column can be pasted straight
+            // into a disassembler's jump-to-address box.
+            if (ImGui::BeginTable("##hits", 3,
+                                  ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders |
+                                  ImGuiTableFlags_ScrollY,
+                                  { 0.0f, 190.0f }))
+            {
+                ImGui::TableSetupColumn("runtime");
+                ImGui::TableSetupColumn("RVA");
+                ImGui::TableSetupColumn("IDA");
+                ImGui::TableSetupScrollFreeze(0, 1);
+                ImGui::TableHeadersRow();
+
+                ImGui::PushFont(g_font_mono, 0.0f);
+                for (const auto address : g_sig_hits)
+                {
+                    const violet::mem::ScanResult r{ address };
+                    ImGui::TableNextRow();
+                    ImGui::TableNextColumn(); ImGui::Text("0x%llX", (unsigned long long)address);
+                    ImGui::TableNextColumn(); ImGui::Text("0x%llX", (unsigned long long)r.rva());
+                    ImGui::TableNextColumn(); ImGui::Text("0x%llX", (unsigned long long)r.ida());
+                }
+                ImGui::PopFont();
+                ImGui::EndTable();
+            }
+        }
+    }
 
     void tab_status(const ImGuiViewport* vp)
     {
@@ -304,7 +445,7 @@ void draw()
     ImGui::SetNextWindowPos({ vp->WorkPos.x + vp->WorkSize.x * 0.5f,
                               vp->WorkPos.y + vp->WorkSize.y * 0.5f },
                             ImGuiCond_FirstUseEver, { 0.5f, 0.5f });
-    ImGui::SetNextWindowSize({ 520.0f, 560.0f }, ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize({ 620.0f, 640.0f }, ImGuiCond_FirstUseEver);
 
     if (!ImGui::Begin("Violet", nullptr, ImGuiWindowFlags_NoCollapse))
     {
@@ -334,6 +475,12 @@ void draw()
         if (ImGui::BeginTabItem("Status"))
         {
             tab_status(vp);
+            ImGui::EndTabItem();
+        }
+
+        if (ImGui::BeginTabItem("Scanner"))
+        {
+            tab_scanner();
             ImGui::EndTabItem();
         }
 

@@ -91,6 +91,7 @@ add_library(Violet SHARED
     src/core/log.cpp
     src/core/process.cpp
     src/input/gamepad.cpp
+    src/mem/pattern.cpp
     src/render/overlay.cpp
     src/ui/menu.cpp
 )
