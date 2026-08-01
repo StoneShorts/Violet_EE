@@ -231,6 +231,39 @@ For contrast, the earlier layout probe found **21,128** blocks with runs of code
 starting at `+0x00` — those are ordinary C++ vtables, and they are everywhere. So the
 scan is working; there simply is no chain to find.
 
+### Strong candidate found: RVA `0x3ED4C20`
+
+Searching for **runs of pointers into heap**, making no assumption about what they point
+to, surfaced a run of **exactly 256** in `.data`:
+
+| | |
+|---|---|
+| Table RVA | **`0x3ED4C20`** |
+| IDA address | `0x143ED4C20` |
+| Entries | exactly 256 |
+
+Four entries sampled across the table (slots 0, 64, 128, 192) all share one layout:
+
+```
++0x00   opaque 64-bit
++0x08   heap-range value, aligned in some entries and not others
++0x10   \
+ ...     >  fixed array of 7 handler slots, zero-padded when unused
++0x40   /
++0x48   opaque 64-bit values
+ ...
+```
+
+Handler counts in the four samples were **7, 3, 6 and 4** — a fixed seven-slot array,
+partially filled, which is exactly the shape of a registration block. The handlers are
+plain pointers into executable memory; everything else is obfuscated.
+
+**What is still missing: the chain.** `+0x08` sits in the heap address range but is
+frequently *unaligned* (`0x1CE87AA77E4`), so it is not a usable `next` pointer as-is —
+it is obfuscated like the hashes. Every attempt to walk the table therefore terminates
+after one block, which is why the automated scan reports ~10-30 natives instead of
+several thousand.
+
 ### What that leaves
 
 Hashes are encrypted, and the absence of *any* chain of blocks containing raw code

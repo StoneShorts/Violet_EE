@@ -15,13 +15,30 @@ namespace violet::game
 {
 namespace
 {
-    // The historical RAGE layout. Treated as a starting hypothesis, not a fact -
-    // probe_layouts() exists precisely because it might be wrong here.
-    constexpr std::size_t k_offset_next     = 0x00;
-    constexpr std::size_t k_offset_handlers = 0x08;
-    constexpr std::size_t k_offset_count    = 0x40;
+    // The layout, established empirically against GTA V Enhanced 1.0.1158.13.
+    //
+    //     +0x00   uint64    obfuscated (a hash, or the count - see below)
+    //     +0x08   pointer   next registration block
+    //     +0x10   handler   \
+    //     ...                > seven, stored as plain code pointers
+    //     +0x40   handler   /
+    //     +0x48   uint64    \
+    //     ...                > encrypted hashes
+    //
+    // This is the historical RAGE structure shifted eight bytes: classically
+    // `next` sat at +0x00 with handlers from +0x08. Getting that wrong is why
+    // the first three hunts failed - the chain search did test handlers at
+    // +0x10, but followed `next` from +0x00, so every chain died at length 2.
+    //
+    // Note what IS and is not obfuscated. The hashes are encrypted (a plaintext
+    // sweep of all 7.6 GB found only our own probe's constants), but the
+    // handlers are stored as ordinary pointers into executable memory. That
+    // asymmetry is what makes the table findable at all: we cannot search for
+    // a hash, but we can absolutely recognise seven consecutive code pointers.
+    constexpr std::size_t k_offset_next     = 0x08;
+    constexpr std::size_t k_offset_handlers = 0x10;
     constexpr std::size_t k_offset_hashes   = 0x48;
-    constexpr std::size_t k_block_size      = 0x80;
+    constexpr std::size_t k_block_size      = 0x88;
     constexpr std::size_t k_max_entries     = 7;
 
     constexpr std::size_t k_table_slots = 256;
@@ -132,6 +149,21 @@ namespace
         return length;
     }
 
+    // How many handlers does this block actually hold?
+    //
+    // We count valid code pointers rather than trusting a count field, because
+    // we have not yet identified where the count lives - the value at +0x00 is
+    // obfuscated along with the hashes. Counting works regardless, and a block
+    // is full (7) in every case except the last of a chain.
+    std::size_t handler_count(std::uintptr_t block, const violet::mem::RegionMap& regions)
+    {
+        std::size_t n = 0;
+        while (n < k_max_entries &&
+               regions.executable(read<std::uintptr_t>(block + k_offset_handlers + n * 8)))
+            ++n;
+        return n;
+    }
+
     bool looks_like_block(std::uintptr_t address, const violet::mem::RegionMap& regions)
     {
         if (address == 0 || (address & 7) != 0)
@@ -140,20 +172,12 @@ namespace
         if (!regions.readable(address, k_block_size))
             return false;
 
-        const auto count = read<std::uint32_t>(address + k_offset_count);
-        if (count == 0 || count > k_max_entries)
+        // At least one handler pointing at real code. This is the load-bearing
+        // test - it is the thing ordinary data cannot fake.
+        if (handler_count(address, regions) == 0)
             return false;
 
-        // Every handler the block claims to hold must point at executable code.
-        // This is the load-bearing test - it is what ordinary data cannot fake.
-        for (std::uint32_t i = 0; i < count; ++i)
-        {
-            const auto handler = read<std::uintptr_t>(address + k_offset_handlers + i * 8);
-            if (!regions.executable(handler))
-                return false;
-        }
-
-        // The chain pointer must be null or lead somewhere we could read.
+        // The chain pointer must be null or lead somewhere readable.
         const auto next = read<std::uintptr_t>(address + k_offset_next);
         if (next != 0 && !regions.readable(next, k_block_size))
             return false;
@@ -180,9 +204,8 @@ namespace
             if (!looks_like_block(block, regions))
                 break;
 
-            const auto count = read<std::uint32_t>(block + k_offset_count);
             ++blocks;
-            natives += count;
+            natives += handler_count(block, regions);
 
             if (samples.size() < 8)
             {
@@ -220,44 +243,54 @@ NativeTableScan find_native_table()
                 regions.region_count(),
                 static_cast<double>(regions.total_bytes()) / (1024.0 * 1024.0));
 
-    // The table itself is a static array, so it lives in the module's own
-    // writable data. Sweep those sections; the blocks it points at are on the
-    // heap and get validated as we go.
-    std::size_t best_hits  = 0;
-    std::uintptr_t best_at = 0;
+    // The table is a static array, so it lives in the module's own writable
+    // data. Sweep those sections; the blocks it points at are on the heap and
+    // get validated as we go.
+    //
+    // Note we gather ALL plausible windows rather than keeping only the densest
+    // one. Density alone picked the wrong table on the first attempt - a
+    // 256-slot window scored full marks while walking out to just 10 natives.
+    // The real discriminator is the size of the structure once you follow it,
+    // so every candidate gets walked and the biggest wins.
+    std::vector<std::uintptr_t> candidates;
 
     for (const auto& section : info->sections)
     {
-        if (section.executable() || section.size < k_table_slots * 8)
+        if (section.executable() || !section.writable() || section.size < k_table_slots * 8)
             continue;
-        if (!section.writable())
-            continue;   // a table of heap pointers has to be writable
 
         const std::size_t slots = section.size / 8;
 
-        // First pass: which slots hold something block-shaped. Doing this once
-        // into a flat array turns the window search below into a cheap linear
-        // sweep instead of 256 re-tests per position.
+        // One pass to mark which slots hold something block-shaped. Doing this
+        // into a flat array turns the window search into a linear sweep rather
+        // than 256 re-tests per position.
         std::vector<std::uint8_t> valid(slots, 0);
-
         for (std::size_t i = 0; i < slots; ++i)
         {
-            const auto candidate = read<std::uintptr_t>(section.start + i * 8);
-            valid[i] = looks_like_block(candidate, regions) ? 1 : 0;
-        }
+            const auto target = read<std::uintptr_t>(section.start + i * 8);
 
-        // Second pass: the densest window of 256 consecutive slots.
-        if (slots < k_table_slots)
-            continue;
+            // Deliberately loose: any block with at least one real handler.
+            //
+            // Demanding a mostly-full block here was wrong and found nothing.
+            // Registrations are pushed onto the FRONT of each bucket's chain,
+            // so the block a table slot points directly at is the partially
+            // filled one - often holding just one or two handlers. The full
+            // blocks are further down the chain. Filtering on fullness at this
+            // level rejects almost every bucket.
+            //
+            // Precision comes from walking each candidate instead.
+            valid[i] = looks_like_block(target, regions) ? 1 : 0;
+        }
 
         std::size_t running = 0;
         for (std::size_t i = 0; i < k_table_slots; ++i)
             running += valid[i];
 
-        if (running > best_hits)
+        std::size_t skip_until = 0;
+        if (running >= 200)
         {
-            best_hits = running;
-            best_at   = section.start;
+            candidates.push_back(section.start);
+            skip_until = k_table_slots;
         }
 
         for (std::size_t i = k_table_slots; i < slots; ++i)
@@ -265,49 +298,80 @@ NativeTableScan find_native_table()
             running += valid[i];
             running -= valid[i - k_table_slots];
 
-            if (running > best_hits)
+            if (running >= 200 && i >= skip_until)
             {
-                best_hits = running;
-                best_at   = section.start + (i - k_table_slots + 1) * 8;
+                candidates.push_back(section.start + (i - k_table_slots + 1) * 8);
+                skip_until = i + k_table_slots;   // don't report 256 overlapping copies
             }
         }
 
         VIOLET_INFO("  swept {:<10} {} slots", section.name, slots);
     }
 
-    result.elapsed_ms = timer.ms();
+    VIOLET_INFO("  {} candidate table(s)", candidates.size());
 
-    if (best_at == 0 || best_hits < 32)
+    if (candidates.empty())
     {
-        result.detail = std::format(
-            "no table-shaped region found (best window held only {} valid blocks)",
-            best_hits);
+        result.elapsed_ms = timer.ms();
+        result.detail = "no 256-slot window of registration-shaped blocks found";
         return result;
     }
 
-    // ---- verify by walking it ----
-    std::unordered_set<std::uintptr_t> seen;
-    std::size_t blocks = 0, natives = 0;
+    // ---- walk every candidate; the real table is by far the largest ----
+    std::uintptr_t best_at      = 0;
+    std::size_t    best_natives = 0;
+    std::size_t    best_blocks  = 0;
 
-    for (std::size_t i = 0; i < k_table_slots; ++i)
+    for (const auto candidate : candidates)
     {
-        const auto slot = read<std::uintptr_t>(best_at + i * 8);
-        if (slot != 0)
-            walk_chain(slot, regions, seen, blocks, natives, result.samples);
+        std::unordered_set<std::uintptr_t> seen;
+        std::size_t blocks = 0, natives = 0;
+        std::vector<NativeTableScan::Sample> ignored;
+
+        for (std::size_t i = 0; i < k_table_slots; ++i)
+        {
+            const auto slot = read<std::uintptr_t>(candidate + i * 8);
+            if (slot != 0)
+                walk_chain(slot, regions, seen, blocks, natives, ignored);
+        }
+
+        VIOLET_INFO("    0x{:X} (RVA 0x{:X}) -> {} blocks, {} natives",
+                    candidate, candidate - info->base, blocks, natives);
+
+        if (natives > best_natives)
+        {
+            best_natives = natives;
+            best_blocks  = blocks;
+            best_at      = candidate;
+        }
     }
+
+    // Re-walk the winner to collect samples for the log.
+    {
+        std::unordered_set<std::uintptr_t> seen;
+        std::size_t blocks = 0, natives = 0;
+        for (std::size_t i = 0; i < k_table_slots; ++i)
+        {
+            const auto slot = read<std::uintptr_t>(best_at + i * 8);
+            if (slot != 0)
+                walk_chain(slot, regions, seen, blocks, natives, result.samples);
+        }
+    }
+
+    const std::size_t natives = best_natives;
 
     result.table      = best_at;
     result.table_rva  = best_at - info->base;
-    result.slots      = best_hits;
-    result.blocks     = blocks;
-    result.natives    = natives;
+    result.slots      = k_table_slots;
+    result.blocks     = best_blocks;
+    result.natives    = best_natives;
     result.elapsed_ms = timer.ms();
 
     if (natives >= k_plausible_min && natives <= k_plausible_max)
     {
         result.found  = true;
         result.detail = std::format("{} natives across {} blocks - within the expected range",
-                                    natives, blocks);
+                                    natives, best_blocks);
     }
     else
     {
@@ -318,6 +382,179 @@ NativeTableScan find_native_table()
     }
 
     return result;
+}
+
+// ---------------------------------------------------------------------------
+// inspect_table
+// ---------------------------------------------------------------------------
+
+void inspect_table(std::uintptr_t rva, std::size_t entries_to_dump)
+{
+    violet::mem::RegionMap regions;
+    regions.rebuild();
+
+    const auto info = violet::process::inspect(nullptr);
+    if (!info)
+        return;
+
+    const std::uintptr_t table = info->base + rva;
+
+    VIOLET_INFO("--- inspect table at RVA 0x{:X} ---------------------", rva);
+    VIOLET_INFO("  runtime 0x{:X}   IDA 0x{:X}", table, 0x140000000ull + rva);
+    VIOLET_INFO("  Dumping several entries. Deducing the layout from ONE block");
+    VIOLET_INFO("  was a mistake - the field at +0x08 is unaligned, so it is not");
+    VIOLET_INFO("  a pointer at all. Comparing entries shows which fields are");
+    VIOLET_INFO("  structural and which are encrypted noise.");
+
+    // Spread the samples across the table rather than taking the first few in a
+    // row; adjacent buckets can be unrepresentative.
+    const std::size_t stride = (k_table_slots / (entries_to_dump ? entries_to_dump : 1));
+
+    for (std::size_t e = 0; e < entries_to_dump; ++e)
+    {
+        const std::size_t index = e * stride;
+        const auto block = read<std::uintptr_t>(table + index * 8);
+
+        VIOLET_INFO("");
+        VIOLET_INFO("  slot[{}] -> 0x{:X}{}", index, block,
+                    regions.is_private(block) ? "  (heap)" : "");
+
+        if (!regions.readable(block, 0x100))
+        {
+            VIOLET_INFO("    not readable");
+            continue;
+        }
+
+        for (int slot = 0; slot < 32; ++slot)
+        {
+            const std::uintptr_t address = block + static_cast<std::size_t>(slot) * 8;
+            if (!regions.readable(address, 8))
+                break;
+
+            const auto value = read<std::uint64_t>(address);
+            const auto as_ptr = static_cast<std::uintptr_t>(value);
+
+            const char* tag = "";
+            if (regions.executable(as_ptr))
+                tag = "  CODE";
+            else if (value != 0 && (value & 7) == 0 && regions.readable(as_ptr, 0x40))
+                tag = regions.is_private(as_ptr) ? "  aligned heap ptr" : "  aligned ptr";
+            else if (value != 0 && value < 64)
+                tag = "  small int";
+
+            VIOLET_INFO("    +0x{:02X}  0x{:016X}{}", slot * 8, value, tag);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// hunt_pointer_tables
+// ---------------------------------------------------------------------------
+
+void hunt_pointer_tables()
+{
+    violet::mem::RegionMap regions;
+    regions.rebuild();
+
+    const auto info = violet::process::inspect(nullptr);
+    if (!info)
+        return;
+
+    VIOLET_INFO("--- pointer-table hunt ------------------------------");
+    VIOLET_INFO("  Everything so far assumed .data points straight AT the");
+    VIOLET_INFO("  registration blocks. If the 256-entry table is itself heap");
+    VIOLET_INFO("  allocated, that is two levels of indirection and every scan");
+    VIOLET_INFO("  so far would have missed it. Looking for long runs of");
+    VIOLET_INFO("  pointers into heap - no assumption about what they point to.");
+
+    constexpr std::size_t k_min_run = 128;
+
+    const Timer timer;
+
+    struct Found { std::uintptr_t start; std::size_t length; };
+    std::vector<Found> candidates;
+
+    const auto sweep = [&](std::uintptr_t begin, std::uintptr_t end)
+    {
+        std::size_t run = 0;
+        std::uintptr_t run_start = 0;
+
+        for (std::uintptr_t address = begin; address + 8 <= end; address += 8)
+        {
+            const auto value = read<std::uintptr_t>(address);
+
+            // Only count pointers into heap. A run of pointers into the
+            // module's own data is far more likely to be a relocation table or
+            // an array of import thunks than anything we want.
+            const bool ok = value != 0 && (value & 7) == 0 &&
+                            regions.readable(value, 0x40) &&
+                            regions.is_private(value);
+
+            if (ok)
+            {
+                if (run == 0)
+                    run_start = address;
+                ++run;
+            }
+            else
+            {
+                if (run >= k_min_run)
+                    candidates.push_back({ run_start, run });
+                run = 0;
+            }
+        }
+
+        if (run >= k_min_run)
+            candidates.push_back({ run_start, run });
+    };
+
+    for (const auto& section : info->sections)
+    {
+        if (section.executable() || !section.writable() || section.size < k_min_run * 8)
+            continue;
+        sweep(section.start, section.start + section.size);
+    }
+
+    VIOLET_INFO("  swept module data in {:.0f} ms, {} candidate run(s) of {}+ heap pointers",
+                timer.ms(), candidates.size(), k_min_run);
+
+    // Report the most table-shaped ones. 256 is the number we care about.
+    std::size_t shown = 0;
+    for (const auto& c : candidates)
+    {
+        if (shown >= 6)
+            break;
+        ++shown;
+
+        VIOLET_INFO("");
+        VIOLET_INFO("  run of {} at 0x{:X}  (RVA 0x{:X}, IDA 0x{:X})",
+                    c.length, c.start, c.start - info->base,
+                    0x140000000ull + (c.start - info->base));
+
+        // What does the first entry actually look like? Even with encrypted
+        // handlers, the block's SHAPE is visible.
+        const auto first = read<std::uintptr_t>(c.start);
+        VIOLET_INFO("    first entry -> 0x{:X}, contents:", first);
+
+        for (int slot = 0; slot < 20; ++slot)
+        {
+            const std::uintptr_t address = first + static_cast<std::size_t>(slot) * 8;
+            if (!regions.readable(address, 8))
+                break;
+
+            const auto value = read<std::uint64_t>(address);
+
+            const char* tag = "";
+            if (regions.executable(static_cast<std::uintptr_t>(value)))
+                tag = "  <-- CODE";
+            else if (value != 0 && regions.readable(static_cast<std::uintptr_t>(value), 8))
+                tag = "  <-- ptr";
+            else if (value != 0 && value < 64)
+                tag = "  <-- small int";
+
+            VIOLET_INFO("      +0x{:02X}  0x{:016X}{}", slot * 8, value, tag);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -124,4 +124,10 @@ bool RegionMap::executable(std::uintptr_t address) const
     const Region* r = find(address);
     return r != nullptr && r->exec;
 }
+
+bool RegionMap::is_private(std::uintptr_t address) const
+{
+    const Region* r = find(address);
+    return r != nullptr && r->is_private;
+}
 }

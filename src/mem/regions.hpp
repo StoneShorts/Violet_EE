@@ -36,6 +36,12 @@ namespace violet::mem
         // native handlers - a handler must point at code.
         bool executable(std::uintptr_t address) const;
 
+        // Does this address live in heap (MEM_PRIVATE) rather than a mapped
+        // file? Same binary search as the others - never loop the region list
+        // by hand, there are thousands of them and callers test millions of
+        // pointers.
+        bool is_private(std::uintptr_t address) const;
+
         std::size_t region_count()  const { return m_regions.size(); }
         std::size_t total_bytes()   const { return m_total; }
 

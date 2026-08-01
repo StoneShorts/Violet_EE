@@ -108,4 +108,17 @@ namespace violet::game
     // candidate handler-array offsets and prints the raw contents of whatever
     // it finds, so the real layout can be read off rather than assumed.
     void hunt_chains();
+
+    // Closes a gap in the scans above: they all assumed the module's .data
+    // points straight at registration blocks. If the 256-entry table is itself
+    // heap-allocated, that is two levels of indirection and every earlier scan
+    // would have missed it. Looks for long runs of pointers into heap, making
+    // no assumption whatsoever about what they point to.
+    void hunt_pointer_tables();
+
+    // Dump several entries of a specific table, given its RVA. Used to read a
+    // structure's real layout off the screen rather than deducing it from a
+    // single sample - which is how the "+0x08 is the next pointer" mistake
+    // happened.
+    void inspect_table(std::uintptr_t rva, std::size_t entries_to_dump = 4);
 }

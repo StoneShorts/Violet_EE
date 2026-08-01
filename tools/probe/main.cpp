@@ -68,8 +68,9 @@ namespace
         // Hashes are not stored in plaintext (established by hunt_known_hashes
         // on an earlier run - the only matches were the probe's own constants).
         // So the table has to be found structurally.
+        // The 256-entry run the pointer hunt keeps surfacing. Dump it properly.
         VIOLET_INFO("");
-        violet::game::hunt_chains();
+        violet::game::inspect_table(0x3ED4C20, 4);
 
         VIOLET_INFO("");
         VIOLET_INFO("probe complete - unloading");
