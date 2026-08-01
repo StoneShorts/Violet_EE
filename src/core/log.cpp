@@ -3,9 +3,11 @@
 #include <Windows.h>
 
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
+#include <system_error>
 
 namespace violet::log
 {
@@ -32,13 +34,38 @@ namespace
 
 void init(void* self, bool also_open_console)
 {
-    // GetModuleFileNameW answers the question "what file on disk was this
-    // HMODULE loaded from?" - giving us the full path to Violet.dll.
-    wchar_t path[MAX_PATH]{};
-    GetModuleFileNameW(static_cast<HMODULE>(self), path, MAX_PATH);
+    // The log goes to a fixed location: %LOCALAPPDATA%\Violet\Violet.log
+    //
+    // It used to sit next to the DLL, which was tidy right up until the
+    // injector started loading a disposable COPY from a staging folder (so that
+    // building Violet does not fail while Violet is loaded). "Next to the DLL"
+    // now means a temp directory nobody would think to look in.
+    //
+    // A fixed path is better anyway: it never lands in the game's install
+    // folder, and never in a synced folder where a sync client would fight the
+    // flush-on-every-line below.
+    std::filesystem::path log_path;
 
-    std::filesystem::path log_path{ path };
-    log_path.replace_filename(L"Violet.log");
+    wchar_t*    local_app_data = nullptr;
+    std::size_t length         = 0;
+
+    if (_wdupenv_s(&local_app_data, &length, L"LOCALAPPDATA") == 0 && local_app_data != nullptr)
+    {
+        log_path = std::filesystem::path{ local_app_data } / L"Violet";
+        std::free(local_app_data);
+
+        std::error_code ec;
+        std::filesystem::create_directories(log_path, ec);
+        log_path /= L"Violet.log";
+    }
+    else
+    {
+        // Fall back to sitting beside whatever module we were loaded from.
+        wchar_t path[MAX_PATH]{};
+        GetModuleFileNameW(static_cast<HMODULE>(self), path, MAX_PATH);
+        log_path = path;
+        log_path.replace_filename(L"Violet.log");
+    }
 
     // trunc = start fresh each launch. You want the current run's log, not a
     // 400 MB file with fifty runs concatenated together.

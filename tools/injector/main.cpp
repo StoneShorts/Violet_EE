@@ -75,6 +75,55 @@ namespace
         return pid;
     }
 
+    // Copy the DLL somewhere disposable and inject THAT, never the build output.
+    //
+    // Windows holds an exclusive lock on a DLL for as long as it is loaded in
+    // any process. Inject bin\Violet.dll directly and your very next build dies
+    // with "LNK1104: cannot open file Violet.dll", because the linker cannot
+    // overwrite a file the game is still holding open. You would have to unload
+    // before every single rebuild.
+    //
+    // Injecting a uniquely-named copy removes the constraint entirely: the
+    // build output is never the file that gets locked.
+    std::filesystem::path stage_copy(const std::filesystem::path& source)
+    {
+        wchar_t* local = nullptr;
+        std::size_t len = 0;
+        if (_wdupenv_s(&local, &len, L"LOCALAPPDATA") != 0 || local == nullptr)
+            return source;   // no staging area available; inject in place
+
+        std::filesystem::path dir = std::filesystem::path{ local } / L"Violet" / L"staging";
+        free(local);
+
+        std::error_code ec;
+        std::filesystem::create_directories(dir, ec);
+        if (ec)
+            return source;
+
+        // Sweep up copies from previous runs. Any still loaded in a live
+        // process will refuse to delete, which is exactly what we want.
+        for (const auto& entry : std::filesystem::directory_iterator{ dir, ec })
+        {
+            std::error_code ignored;
+            std::filesystem::remove(entry.path(), ignored);
+        }
+
+        // Unique name so a copy still loaded from a previous session cannot
+        // collide with this one.
+        const std::wstring name = L"Violet_" + std::to_wstring(GetTickCount64()) + L".dll";
+        const std::filesystem::path destination = dir / name;
+
+        std::filesystem::copy_file(source, destination,
+                                   std::filesystem::copy_options::overwrite_existing, ec);
+        if (ec)
+        {
+            std::wcerr << L"[!] could not stage a copy, injecting in place\n";
+            return source;
+        }
+
+        return destination;
+    }
+
     void print_last_error(const char* what)
     {
         const DWORD code = GetLastError();
@@ -118,6 +167,10 @@ int wmain(int argc, wchar_t** argv)
     }
 
     std::wcout << L"[*] dll    : " << dll.wstring() << L"\n";
+
+    dll = stage_copy(dll);
+    std::wcout << L"[*] staged : " << dll.wstring() << L"\n";
+
     std::wcout << L"[*] target : " << target << L"\n";
 
     // ---- 1. find and open the target ------------------------------------

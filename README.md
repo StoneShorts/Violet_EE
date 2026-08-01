@@ -137,8 +137,16 @@ bin\inject.exe GTA5_Enhanced.exe bin\Violet.dll
 | D-pad&nbsp;left + right&nbsp;trigger | toggle the menu (hold briefly) |
 | D-pad / left stick, **A**, **B** | navigate, select, back |
 
-Violet unloads itself when the game closes. Diagnostics are written to `bin/Violet.log`,
-to a debug console, and to any attached debugger.
+Violet unloads itself when the game closes, and the menu has an **Unload Violet** button
+that detaches it cleanly — you can inject a fresh build straight afterwards without
+restarting the game.
+
+Diagnostics go to `%LOCALAPPDATA%\Violet\Violet.log`, to a debug console, and to any
+attached debugger.
+
+> The injector deliberately loads a uniquely-named **copy** of the DLL from a staging
+> folder. Windows holds an exclusive lock on a loaded DLL, so injecting the build output
+> directly would make your next build fail with `LNK1104` until you unloaded.
 
 **Back up your saves first** — `Documents\Rockstar Games\GTA V Enhanced\Profiles\`. A
 misbehaving mod can corrupt a save, and no playthrough deserves that.

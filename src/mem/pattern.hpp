@@ -115,6 +115,53 @@ namespace violet::mem
     double      last_scan_ms();
     std::size_t last_scan_bytes();
 
+    // -----------------------------------------------------------------------
+    // Finding things when nothing is labelled
+    // -----------------------------------------------------------------------
+    //
+    // A signature is how you RE-find something you have already located. It is
+    // no help at all for the first discovery, because you do not yet know what
+    // bytes to look for.
+    //
+    // This is how you get the first foothold. A stripped binary has no function
+    // names - but it is full of strings: error messages, asset paths, script
+    // names, format strings. Those are effectively labels the developers left
+    // behind by accident.
+    //
+    // So the technique is two steps:
+    //
+    //   1. find_string()     - locate the text in the read-only data sections
+    //   2. find_references() - find the code that points at that address
+    //
+    // Step 2 works because x64 code loads a global's address with a
+    // RIP-relative instruction, so the reference is discoverable by resolving
+    // every candidate and checking where it lands. Whatever function contains
+    // that instruction is the one that prints, loads, or checks that string -
+    // and now you have located a function by what it SAYS, without a single
+    // symbol.
+
+    // Search the readable, non-executable sections for an ASCII string.
+    std::vector<std::uintptr_t> find_string(std::string_view text, std::size_t limit = 64);
+
+    struct Xref
+    {
+        std::uintptr_t instruction = 0;
+        char           kind        = '?';   // 'L' = lea (take address), 'M' = mov (load value)
+    };
+
+    // Find RIP-relative instructions in executable memory that resolve to
+    // `target`. Covers the two overwhelmingly common forms:
+    //
+    //     48 8D 0D xx xx xx xx    lea rcx, [rip+disp]   - take its address
+    //     48 8B 05 xx xx xx xx    mov rax, [rip+disp]   - load through it
+    //
+    // Note this necessarily produces some false positives. x86 instructions are
+    // variable length, so without fully disassembling you cannot know where one
+    // begins - bytes in the middle of an unrelated instruction can coincidentally
+    // look like a RIP-relative load. Most hits are real; verify in a
+    // disassembler before trusting one.
+    std::vector<Xref> find_references(std::uintptr_t target, std::size_t limit = 64);
+
     // ---- verification ----
     //
     // Runs at startup. Samples real bytes out of the game's own code, builds a

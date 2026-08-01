@@ -35,7 +35,8 @@ namespace
     std::optional<violet::process::ModuleInfo> g_module;
 
     // Two-step guard on the unload button - see the footer in draw().
-    bool g_unload_armed = false;
+    bool   g_unload_armed  = false;
+    double g_unload_arm_at = 0.0;
 
     // ---- signature scanner tab state ----
     char        g_sig_input[512] = "48 89 5C 24 ? 57 48 83 EC";
@@ -47,6 +48,15 @@ namespace
     std::size_t g_sig_fixed   = 0;
 
     std::optional<violet::mem::SelfTest> g_selftest;
+
+    // ---- string / xref search state ----
+    char        g_text_input[128] = "Rockstar";
+    std::vector<std::uintptr_t>    g_text_hits;
+    std::vector<violet::mem::Xref> g_xrefs;
+    std::uintptr_t g_xref_target = 0;
+    std::string    g_text_status = "Search for text that exists in the game's data.";
+    double         g_text_ms     = 0.0;
+    double         g_xref_ms     = 0.0;
 
     // -----------------------------------------------------------------------
     // fonts
@@ -199,6 +209,144 @@ namespace
                     pattern->text(), g_sig_hits.size(), g_sig_ms);
     }
 
+    void draw_find_text()
+    {
+        heading("Find text  ->  find the code that uses it");
+
+        ImGui::PushStyleColor(ImGuiCol_Text, k_text_dim);
+        ImGui::TextWrapped(
+            "A signature re-finds something you already located. This is how you find "
+            "it the FIRST time. Nothing in the binary is labelled - except strings. "
+            "Locate one, then find the instruction that points at it, and whatever "
+            "function contains that instruction is the one that uses it.");
+        ImGui::PopStyleColor();
+
+        ImGui::Dummy({ 0.0f, 4.0f });
+
+        ImGui::PushFont(g_font_mono, 0.0f);
+        ImGui::SetNextItemWidth(-1.0f);
+        const bool submitted = ImGui::InputText("##findtext", g_text_input, sizeof(g_text_input),
+                                                ImGuiInputTextFlags_EnterReturnsTrue);
+        ImGui::PopFont();
+
+        if (ImGui::Button("Search text") || submitted)
+        {
+            g_text_hits.clear();
+            g_xrefs.clear();
+            g_xref_target = 0;
+
+            g_text_hits = violet::mem::find_string(g_text_input, 64);
+            g_text_ms   = violet::mem::last_scan_ms();
+
+            g_text_status = g_text_hits.empty()
+                ? "Not found in any data section. Try a different string - case matters."
+                : "Found. Press 'refs' on a row to find the code that points at it.";
+
+            VIOLET_INFO("find_string '{}' -> {} hit(s) in {:.1f} ms",
+                        g_text_input, g_text_hits.size(), g_text_ms);
+        }
+
+        ImGui::SameLine();
+        ImGui::PushStyleColor(ImGuiCol_Text, k_text_dim);
+        ImGui::TextWrapped("%s", g_text_status.c_str());
+        ImGui::PopStyleColor();
+
+        if (g_text_hits.empty())
+            return;
+
+        char buf[128];
+        std::snprintf(buf, sizeof(buf), "%zu occurrence(s) in %.1f ms",
+                      g_text_hits.size(), g_text_ms);
+        key_value("data hits", buf, true);
+
+        if (ImGui::BeginTable("##strhits", 3,
+                              ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders |
+                              ImGuiTableFlags_ScrollY, { 0.0f, 130.0f }))
+        {
+            ImGui::TableSetupColumn("address");
+            ImGui::TableSetupColumn("IDA");
+            ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 60.0f);
+            ImGui::TableSetupScrollFreeze(0, 1);
+            ImGui::TableHeadersRow();
+
+            int row = 0;
+            for (const auto address : g_text_hits)
+            {
+                const violet::mem::ScanResult r{ address };
+                ImGui::TableNextRow();
+                ImGui::PushID(row++);
+
+                ImGui::TableNextColumn();
+                ImGui::PushFont(g_font_mono, 0.0f);
+                ImGui::Text("0x%llX", (unsigned long long)address);
+                ImGui::TableNextColumn();
+                ImGui::Text("0x%llX", (unsigned long long)r.ida());
+                ImGui::PopFont();
+
+                ImGui::TableNextColumn();
+                if (ImGui::SmallButton("refs"))
+                {
+                    g_xref_target = address;
+                    g_xrefs       = violet::mem::find_references(address, 64);
+                    g_xref_ms     = violet::mem::last_scan_ms();
+                    VIOLET_INFO("find_references 0x{:X} -> {} ref(s) in {:.1f} ms",
+                                address, g_xrefs.size(), g_xref_ms);
+                }
+
+                ImGui::PopID();
+            }
+            ImGui::EndTable();
+        }
+
+        if (g_xref_target == 0)
+            return;
+
+        heading("Code that references it");
+
+        if (g_xrefs.empty())
+        {
+            ImGui::PushStyleColor(ImGuiCol_Text, k_text_dim);
+            ImGui::TextWrapped(
+                "No RIP-relative reference found. That usually means the string is "
+                "reached through a table or a pointer rather than by taking its "
+                "address directly - very common for arrays of related strings.");
+            ImGui::PopStyleColor();
+            return;
+        }
+
+        std::snprintf(buf, sizeof(buf), "%zu reference(s) in %.1f ms",
+                      g_xrefs.size(), g_xref_ms);
+        key_value("found", buf, true);
+
+        ImGui::PushStyleColor(ImGuiCol_Text, k_text_dim);
+        ImGui::TextWrapped("Paste an IDA address below into your disassembler. "
+                           "'lea' takes the address, 'mov' loads through it.");
+        ImGui::PopStyleColor();
+
+        if (ImGui::BeginTable("##xrefs", 3,
+                              ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders |
+                              ImGuiTableFlags_ScrollY, { 0.0f, 150.0f }))
+        {
+            ImGui::TableSetupColumn("instruction");
+            ImGui::TableSetupColumn("IDA");
+            ImGui::TableSetupColumn("kind", ImGuiTableColumnFlags_WidthFixed, 50.0f);
+            ImGui::TableSetupScrollFreeze(0, 1);
+            ImGui::TableHeadersRow();
+
+            ImGui::PushFont(g_font_mono, 0.0f);
+            for (const auto& x : g_xrefs)
+            {
+                const violet::mem::ScanResult r{ x.instruction };
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn(); ImGui::Text("0x%llX", (unsigned long long)x.instruction);
+                ImGui::TableNextColumn(); ImGui::Text("0x%llX", (unsigned long long)r.ida());
+                ImGui::TableNextColumn(); ImGui::TextUnformatted(x.kind == 'L' ? "lea" : "mov");
+            }
+            ImGui::PopFont();
+            ImGui::EndTable();
+        }
+    }
+
     void tab_scanner()
     {
         heading("Self-test");
@@ -229,12 +377,17 @@ namespace
             key_value("throughput", buf, true);
         }
 
+        // Discovery comes first, then signatures. You cannot write a signature
+        // for something you have not found yet.
+        draw_find_text();
+
         heading("Try a signature");
 
         ImGui::PushStyleColor(ImGuiCol_Text, k_text_dim);
-        ImGui::TextWrapped("Hex byte pairs, ? for a wildcard. Wildcard the bytes that "
-                           "change between builds - call offsets, RIP displacements - "
-                           "and keep the opcodes.");
+        ImGui::TextWrapped("Once you have located something, a signature is how you find it "
+                           "again after a game update. Hex byte pairs, ? for a wildcard - "
+                           "wildcard the bytes that move between builds (call offsets, RIP "
+                           "displacements) and keep the opcodes.");
         ImGui::PopStyleColor();
 
         ImGui::Dummy({ 0.0f, 4.0f });
@@ -550,8 +703,20 @@ void draw()
         const char* label = g_unload_armed ? "Confirm unload" : "Unload Violet";
         const float width = ImGui::CalcTextSize(label).x + ImGui::GetStyle().FramePadding.x * 2.0f;
 
-        ImGui::SameLine();
-        ImGui::SetCursorPosX(ImGui::GetWindowWidth() - width - ImGui::GetStyle().WindowPadding.x);
+        // Right-align by padding the SameLine spacing, NOT with SetCursorPosX.
+        //
+        // Cursor positions are relative to the window's content origin, which
+        // already includes the left padding - so "GetWindowWidth() - width -
+        // WindowPadding.x" overshoots by exactly one padding and pushes the
+        // button past the content region. That grows the content size, which
+        // spawns a horizontal scrollbar, which changes the layout, which moves
+        // the button back. Every frame. The visible symptom is a button that
+        // looks like it is being frantically hovered and clicked by a ghost.
+        const float avail = ImGui::GetContentRegionAvail().x;
+        if (avail > width)
+            ImGui::SameLine(0.0f, avail - width);
+        else
+            ImGui::SameLine();
 
         const ImVec4 idle  = g_unload_armed ? ImVec4{ 0.62f, 0.16f, 0.22f, 0.90f }
                                             : ImVec4{ k_violet.x, k_violet.y, k_violet.z, 0.22f };
@@ -567,8 +732,17 @@ void draw()
             if (g_unload_armed)
                 violet::render::request_unload();
             else
-                g_unload_armed = true;
+            {
+                g_unload_armed  = true;
+                g_unload_arm_at = ImGui::GetTime();
+            }
         }
+
+        // Disarm on its own after a few seconds. If the first press was a
+        // mistake, the second one should not still be waiting for it minutes
+        // later on some unrelated click.
+        if (g_unload_armed && ImGui::GetTime() - g_unload_arm_at > 4.0)
+            g_unload_armed = false;
 
         ImGui::PopStyleColor(3);
 

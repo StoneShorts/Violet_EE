@@ -116,12 +116,14 @@ if errorlevel 1 (
 )
 
 REM Injecting a second time would give you two overlays fighting over the same
-REM hotkeys, and no way to remove either.
-tasklist /m Violet.dll 2>nul | find /i "%TARGET%" >nul
+REM hotkeys. Note we look for "Violet_" rather than "Violet.dll": the injector
+REM loads a uniquely-named staged copy so that building never trips over a
+REM locked file.
+tasklist /m /fi "imagename eq %TARGET%" 2>nul | find /i "Violet_" >nul
 if not errorlevel 1 (
     echo.
     echo   [!] Violet is already running inside GTA.
-    echo       Close the game and relaunch it to inject a fresh build.
+    echo       Open the menu and press "Unload Violet" twice, then run this again.
     goto :fail
 )
 
@@ -149,7 +151,7 @@ echo.
 echo     Violet unloads itself when GTA closes.
 echo   ===========================================
 echo.
-echo   Log: %ROOT%\bin\Violet.log
+echo   Log: %LOCALAPPDATA%\Violet\Violet.log
 echo.
 pause
 exit /b 0

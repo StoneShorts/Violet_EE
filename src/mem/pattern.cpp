@@ -296,6 +296,127 @@ double      last_scan_ms()    { return g_last_ms; }
 std::size_t last_scan_bytes() { return g_last_bytes; }
 
 // ---------------------------------------------------------------------------
+// find_string / find_references
+// ---------------------------------------------------------------------------
+
+std::vector<std::uintptr_t> find_string(std::string_view text, std::size_t limit)
+{
+    std::vector<std::uintptr_t> out;
+
+    const auto info = violet::process::inspect(nullptr);
+    if (!info || text.empty())
+        return out;
+
+    const Timer timer;
+    std::size_t scanned = 0;
+
+    for (const auto& section : info->sections)
+    {
+        // Code sections are skipped - we want where the data lives. And a
+        // section without MEM_READ genuinely is not readable: GTA5_Enhanced.exe
+        // has two (.retplne and .voltbl) that would fault if we touched them.
+        if (section.executable() || section.size == 0)
+            continue;
+        if ((section.characteristics & IMAGE_SCN_MEM_READ) == 0)
+            continue;
+
+        scanned += section.size;
+
+        const auto* begin = reinterpret_cast<const std::uint8_t*>(section.start);
+        const std::size_t n = text.size();
+        if (section.size < n)
+            continue;
+
+        const std::uint8_t* cur   = begin;
+        const std::uint8_t* limit_ptr = begin + (section.size - n);
+
+        while (cur <= limit_ptr)
+        {
+            const std::size_t span = static_cast<std::size_t>(limit_ptr - cur) + 1;
+            const void* hit = std::memchr(cur, text[0], span);
+            if (hit == nullptr)
+                break;
+
+            cur = static_cast<const std::uint8_t*>(hit);
+            if (std::memcmp(cur, text.data(), n) == 0)
+            {
+                out.push_back(reinterpret_cast<std::uintptr_t>(cur));
+                if (out.size() >= limit)
+                {
+                    g_last_ms    = timer.ms();
+                    g_last_bytes = scanned;
+                    return out;
+                }
+            }
+            ++cur;
+        }
+    }
+
+    g_last_ms    = timer.ms();
+    g_last_bytes = scanned;
+    return out;
+}
+
+std::vector<Xref> find_references(std::uintptr_t target, std::size_t limit)
+{
+    std::vector<Xref> out;
+
+    const auto info = violet::process::inspect(nullptr);
+    if (!info || target == 0)
+        return out;
+
+    const Timer timer;
+    std::size_t scanned = 0;
+
+    for (const auto* section : info->executable_sections())
+    {
+        scanned += section->size;
+
+        const auto* p = reinterpret_cast<const std::uint8_t*>(section->start);
+        const std::size_t n = section->size;
+        if (n < 7)
+            continue;
+
+        for (std::size_t i = 0; i + 7 <= n; ++i)
+        {
+            // A REX prefix with the W bit set: 64-bit operand size. The low
+            // bits vary depending on which register is being targeted.
+            const std::uint8_t rex = p[i];
+            if (rex != 0x48 && rex != 0x49 && rex != 0x4C && rex != 0x4D)
+                continue;
+
+            // 8D = lea, 8B = mov r64, r/m64
+            const std::uint8_t op = p[i + 1];
+            if (op != 0x8D && op != 0x8B)
+                continue;
+
+            // ModR/M byte: mod == 00 and rm == 101 is the special encoding that
+            // means "RIP-relative with a 32-bit displacement" in 64-bit mode.
+            // The reg field in the middle selects the destination register and
+            // is masked out here because we do not care which one it is.
+            if ((p[i + 2] & 0xC7) != 0x05)
+                continue;
+
+            const auto instruction = reinterpret_cast<std::uintptr_t>(p + i);
+            if (resolve_rip(instruction, 3, 7) == target)
+            {
+                out.push_back(Xref{ instruction, op == 0x8D ? 'L' : 'M' });
+                if (out.size() >= limit)
+                {
+                    g_last_ms    = timer.ms();
+                    g_last_bytes = scanned;
+                    return out;
+                }
+            }
+        }
+    }
+
+    g_last_ms    = timer.ms();
+    g_last_bytes = scanned;
+    return out;
+}
+
+// ---------------------------------------------------------------------------
 // self_test
 // ---------------------------------------------------------------------------
 
