@@ -14,11 +14,15 @@
 //
 #include "core/log.hpp"
 #include "core/process.hpp"
+#include "game/invoker.hpp"
 #include "game/native_table.hpp"
 
 #include <Windows.h>
 
+#include <cstdlib>
 #include <filesystem>
+#include <format>
+#include <fstream>
 
 namespace
 {
@@ -205,13 +209,134 @@ namespace
             else
                 VIOLET_WARN("  -> partial. Some natives were re-hashed on this build.");
 
-            // Sample the decoded set, so the log shows real data.
+            // Dump the whole decoded table to disk.
+            //
+            // 6748 rows of (hash, RVA) is the raw material for everything else:
+            // intersecting it with the disassembly is how a handler gets
+            // identified by what its code does, rather than by a name we do
+            // not have.
             const auto& all = violet::game::decoded_natives();
+            {
+                wchar_t* local = nullptr;
+                std::size_t len = 0;
+                if (_wdupenv_s(&local, &len, L"LOCALAPPDATA") == 0 && local)
+                {
+                    const std::filesystem::path out =
+                        std::filesystem::path{ local } / L"Violet" / L"natives.tsv";
+                    std::free(local);
+
+                    std::ofstream f{ out, std::ios::trunc };
+                    if (f)
+                    {
+                        f << "hash\trva\n";
+                        for (const auto& e : all)
+                            f << std::format("{:016X}\t{:X}\n",
+                                             e.hash, base ? e.handler - base : 0);
+                        VIOLET_INFO("");
+                        VIOLET_INFO("  wrote {} rows to {}", all.size(), out.string());
+                    }
+                }
+            }
+        }
+
+        // ---- calling a native ourselves ----------------------------------
+        //
+        // The decisive test. Candidates were narrowed statically: native
+        // handlers that call GTA's joaat routine, ranked by how small their
+        // real body is. GET_HASH_KEY should be among the smallest, because it
+        // does nothing but hash.
+        //
+        // We call each with the string "WEAPON_PISTOL" and compare against a
+        // joaat we compute ourselves. A wrong call-context layout cannot
+        // produce the right answer, and the right answer cannot occur by
+        // accident - so a match verifies the invoker AND identifies the native
+        // in one shot.
+        {
             VIOLET_INFO("");
-            VIOLET_INFO("  first 6 of {} decoded natives:", all.size());
-            for (std::size_t i = 0; i < all.size() && i < 6; ++i)
-                VIOLET_INFO("    0x{:016X} -> RVA 0x{:X}",
-                            all[i].hash, base ? all[i].handler - base : 0);
+            VIOLET_INFO("--- calling natives from scratch -------------------");
+
+            const auto module_info2 = violet::process::inspect(nullptr);
+            const std::uintptr_t mbase = module_info2 ? module_info2->base : 0;
+
+            constexpr const char* k_probe_string = "WEAPON_PISTOL";
+            const std::uint32_t expected = violet::game::joaat(k_probe_string);
+
+            VIOLET_INFO("  test string : \"{}\"", k_probe_string);
+            VIOLET_INFO("  expected    : 0x{:08X}  (joaat, computed by us)", expected);
+            VIOLET_INFO("");
+
+            std::vector<std::uintptr_t> candidates;
+            {
+                wchar_t* local = nullptr;
+                std::size_t len = 0;
+                if (_wdupenv_s(&local, &len, L"LOCALAPPDATA") == 0 && local)
+                {
+                    const std::filesystem::path list =
+                        std::filesystem::path{ local } / L"Violet" / L"candidates.txt";
+                    std::free(local);
+
+                    std::ifstream f{ list };
+                    std::string line;
+                    while (std::getline(f, line))
+                    {
+                        if (line.empty()) continue;
+                        candidates.push_back(std::strtoull(line.c_str(), nullptr, 16));
+                    }
+                }
+            }
+
+            VIOLET_INFO("  {} candidate handler(s) to try", candidates.size());
+
+            const std::uint64_t args[1] = {
+                reinterpret_cast<std::uint64_t>(k_probe_string)
+            };
+
+            bool found = false;
+            for (const auto rva : candidates)
+            {
+                const std::uintptr_t handler = mbase + rva;
+
+                std::uint64_t result = 0;
+                const bool ok = violet::game::call_handler_raw(handler, args, 1, result);
+
+                const auto low = static_cast<std::uint32_t>(result);
+                const bool match = ok && low == expected;
+
+                VIOLET_INFO("    RVA 0x{:<8X} {}  returned 0x{:08X}  {}",
+                            rva, ok ? "called " : "FAULTED", low,
+                            match ? "*** MATCH ***" : "");
+
+                if (match)
+                {
+                    found = true;
+
+                    // Reverse-look-up its hash in the table we decoded, giving
+                    // GET_HASH_KEY's real hash on this build.
+                    for (const auto& e : violet::game::decoded_natives())
+                    {
+                        if (e.handler == handler)
+                        {
+                            VIOLET_INFO("");
+                            VIOLET_INFO("  GET_HASH_KEY on build 1158.13:");
+                            VIOLET_INFO("    hash    0x{:016X}", e.hash);
+                            VIOLET_INFO("    handler RVA 0x{:X}", rva);
+                            break;
+                        }
+                    }
+                    break;
+                }
+            }
+
+            VIOLET_INFO("");
+            if (found)
+            {
+                VIOLET_INFO("  *** A NATIVE WAS CALLED FROM SCRATCH AND RETURNED");
+                VIOLET_INFO("      THE CORRECT ANSWER. No ScriptHookV involved. ***");
+            }
+            else
+            {
+                VIOLET_WARN("  no candidate produced the expected hash");
+            }
         }
 
         VIOLET_INFO("");

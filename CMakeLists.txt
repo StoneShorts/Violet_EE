@@ -138,6 +138,7 @@ add_library(probe SHARED
     src/core/log.cpp
     src/core/process.cpp
     src/mem/regions.cpp
+    src/game/invoker.cpp
     src/game/native_table.cpp
 )
 target_include_directories(probe PRIVATE src)
