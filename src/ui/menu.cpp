@@ -3,6 +3,7 @@
 #include "core/log.hpp"
 #include "core/process.hpp"
 #include "input/gamepad.hpp"
+#include "mem/dump.hpp"
 #include "mem/pattern.hpp"
 #include "render/overlay.hpp"
 
@@ -47,7 +48,9 @@ namespace
     std::size_t g_sig_bytes   = 0;
     std::size_t g_sig_fixed   = 0;
 
-    std::optional<violet::mem::SelfTest> g_selftest;
+    std::optional<violet::mem::SelfTest>    g_selftest;
+    std::optional<violet::mem::DiskCompare> g_compare;
+    std::optional<violet::mem::DumpResult>  g_dump;
 
     // ---- string / xref search state ----
     char        g_text_input[128] = "Rockstar";
@@ -347,8 +350,95 @@ namespace
         }
     }
 
+    void draw_dump()
+    {
+        heading("Memory dump");
+
+        ImGui::PushStyleColor(ImGuiCol_Text, k_text_dim);
+        ImGui::TextWrapped(
+            "The file on disk has been processed after linking - a disassembler reads "
+            "mostly nonsense from it. But by the time Violet is running, the loader has "
+            "mapped the image and anything that unpacks has already unpacked, because "
+            "the CPU has to execute real instructions eventually. Memory holds the truth.");
+        ImGui::PopStyleColor();
+
+        ImGui::Dummy({ 0.0f, 6.0f });
+
+        char buf[192];
+
+        if (ImGui::Button("Compare memory with disk"))
+            g_compare = violet::mem::compare_text_with_disk();
+
+        if (g_compare)
+        {
+            if (!g_compare->ok)
+            {
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4{ 0.90f, 0.32f, 0.34f, 1.0f });
+                ImGui::TextWrapped("%s", g_compare->detail.c_str());
+                ImGui::PopStyleColor();
+            }
+            else
+            {
+                std::snprintf(buf, sizeof(buf), "%.2f%% of bytes differ",
+                              g_compare->percent);
+                key_value("difference", buf, true);
+
+                std::snprintf(buf, sizeof(buf), "%zu of %zu",
+                              g_compare->differing, g_compare->compared);
+                key_value("bytes", buf, true);
+
+                ImGui::PushStyleColor(ImGuiCol_Text, k_text_dim);
+                ImGui::TextWrapped("%s", g_compare->detail.c_str());
+                ImGui::PopStyleColor();
+            }
+        }
+
+        ImGui::Dummy({ 0.0f, 6.0f });
+
+        if (ImGui::Button("Dump module to disk"))
+            g_dump = violet::mem::dump_module();
+
+        ImGui::SameLine();
+        ImGui::PushStyleColor(ImGuiCol_Text, k_text_dim);
+        ImGui::TextUnformatted("writes ~91 MB, takes a second");
+        ImGui::PopStyleColor();
+
+        if (g_dump)
+        {
+            if (!g_dump->ok)
+            {
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4{ 0.90f, 0.32f, 0.34f, 1.0f });
+                ImGui::TextWrapped("%s", g_dump->detail.c_str());
+                ImGui::PopStyleColor();
+            }
+            else
+            {
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4{ 0.44f, 0.85f, 0.52f, 1.0f });
+                ImGui::TextUnformatted("Written.");
+                ImGui::PopStyleColor();
+
+                ImGui::PushFont(g_font_mono, 0.0f);
+                ImGui::TextWrapped("%s", g_dump->path.c_str());
+                ImGui::PopFont();
+
+                ImGui::PushStyleColor(ImGuiCol_Text, k_text_dim);
+                ImGui::TextWrapped("%s", g_dump->detail.c_str());
+                ImGui::TextWrapped("Open this in IDA instead of the original. Section headers "
+                                   "have been rewritten to describe the mapped layout, and the "
+                                   "image base restored to 0x140000000 so every address still "
+                                   "matches the live process.");
+                ImGui::PopStyleColor();
+
+                if (ImGui::Button("Copy path"))
+                    ImGui::SetClipboardText(g_dump->path.c_str());
+            }
+        }
+    }
+
     void tab_scanner()
     {
+        draw_dump();
+
         heading("Self-test");
 
         if (!g_selftest)

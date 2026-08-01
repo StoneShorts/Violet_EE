@@ -113,6 +113,55 @@ first three; Rockstar's own we simply have to live alongside.
 
 ---
 
+## What the build path tells us
+
+Rockstar left the PDB path in the binary. IDA shows it in the file header:
+
+```
+X:\gta5\titleupdate\dev_gen9_sga_live\game_win64_gdk_master_llvm.pdb
+```
+
+| Fragment | Meaning |
+|---|---|
+| `dev_gen9` | 9th-gen console codebase — the Enhanced branch, not Legacy |
+| `sga` | Rockstar's internal name for this engine variant. **The game's window class is `sgaWindow`** — same name |
+| `gdk` | built against Microsoft's Game Development Kit |
+| **`llvm`** | **compiled with Clang/LLVM, not MSVC** |
+
+That last one has real consequences. Every published signature for GTA V Legacy was
+derived from an **MSVC** build. Clang emits different prologues, different register
+allocation, different inlining and different idioms for the same source. Legacy
+signatures will not transfer, and neither will most Legacy structure offsets derived from
+them. Enhanced has to be re-derived from scratch.
+
+Build timestamp on the analysed copy: `6A4F97F6` — Thu 09 Jul 2026.
+
+---
+
+## The disk binary is not worth disassembling
+
+Loading `GTA5_Enhanced.exe` from disk into IDA 7.7 produces:
+
+* **Garbage at the entry of `.text`.** `0x140001000` disassembles to `out dx, eax`,
+  `movsb`, `lodsd`, `cld`/`std` — 16-bit DOS-era instructions no 64-bit compiler emits.
+* **A navigator bar that is almost entirely "Unexplored".**
+* **~10,500 functions** identified across 46.8 MB of code. That should be well into six
+  figures.
+
+IDA's own header parse does agree with Violet's runtime recon exactly — image base
+`140000000`, section 1 virtual size `0x02479400` = 38,245,376 bytes — so the *headers* are
+honest. It is the code that isn't.
+
+**Therefore: analyse a memory dump, not the file.** By the time Violet is running, the
+loader has mapped the image, applied relocations and resolved imports, and anything that
+unpacks at runtime has already done so — the CPU has to execute real instructions
+eventually. `mem/dump.cpp` writes the mapped image back out with section headers rewritten
+to `PointerToRawData = VirtualAddress`, `SizeOfRawData = VirtualSize`, and the original
+image base restored, so the result opens in IDA at `0x140000000` with every address still
+matching the live process.
+
+---
+
 ## The game's window
 
 Captured live from inside the process:
